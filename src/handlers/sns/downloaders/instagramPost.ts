@@ -78,8 +78,8 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
       },
     );
 
-    // set time to cancel by, 10 seconds later
-    let cancelAt = Date.now() + 10 * 1000;
+    // set time to cancel by, 30 seconds later
+    let cancelAt = Date.now() + 30 * 1000;
 
     let resParsed: BdMonitorResponse;
     while (true) {
@@ -97,7 +97,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
             "Failed to fetch ig API snapshot response",
           );
 
-          throw new Error("Failed to fetch ig API response");
+          throw new Error("Failed to fetch ig API response within 30 seconds");
         }
 
         // Wait a bit
@@ -115,7 +115,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
           "Failed to fetch ig API snapshot response",
         );
 
-        throw new Error("Failed to fetch ig API response");
+        throw new Error(`Failed to fetch ig API response: ${res.status}`);
       }
 
       const resJson = await res.json();
