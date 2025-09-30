@@ -5,7 +5,7 @@ import {
 } from "discord.js";
 import logger from "../../../logger";
 import { chunkArray, itemsToMessageContents } from "../../util";
-import type { APIMedia, TweetAPIResponse } from "./../fxtweet";
+import type { TweetAPIResponse } from "./../fxtweet";
 import {
   attachmentMessageContent,
   SnsDownloader,
@@ -88,16 +88,17 @@ export class TwitterDownloader extends SnsDownloader<TwitterMetadata> {
       throw new Error("Tweet not found: " + tweetRes.message);
     }
 
-    const media = tweetRes.tweet.media.all?.map((m) => ({
-      ...m,
-      url: this.origTwitterPhotoUrl(m),
-    }));
+    const media = tweetRes.tweet.media.all;
 
-    const buffers = await this.downloadImages(media?.map((m) => m.url) ?? []);
+    if (!media) {
+      throw new Error("No media found in tweet");
+    }
+
+    const buffers = await this.downloadImages(media.map((m) => m.url));
 
     const files = buffers.map((buf, i) => {
       return {
-        ext: getFileExtFromURL(media![i].url),
+        ext: getFileExtFromURL(media[i].url),
         buffer: buf,
       };
     });
@@ -170,9 +171,5 @@ export class TwitterDownloader extends SnsDownloader<TwitterMetadata> {
 
     msgs.push(...imageMsgs);
     return msgs;
-  }
-
-  private origTwitterPhotoUrl(media: APIMedia): string {
-    return `${media.url}?name=orig`;
   }
 }
