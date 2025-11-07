@@ -6,7 +6,7 @@ export const BdTriggerResponseSchema = z.object({
 
 export type BdTriggerResponse = z.infer<typeof BdTriggerResponseSchema>;
 
-export const BdMonitorStatus = z.enum(["running", "ready", "failed"]);
+export const BdMonitorStatus = z.enum(["starting", "running", "ready", "failed"]);
 
 export const BdMonitorResponseSchema = z.object({
   status: BdMonitorStatus,
