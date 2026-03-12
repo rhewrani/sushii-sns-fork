@@ -4,9 +4,9 @@ import {
   MessageFlags,
   type MessageCreateOptions,
 } from "discord.js";
-import config from "../../../config/config";
-import logger from "../../../logger";
-import { chunkArray, itemsToMessageContents } from "../../util";
+import config from "../../config/config";
+import logger from "../../logger";
+import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import {
   attachmentMessageContent,
   SnsDownloader,
@@ -15,12 +15,11 @@ import {
   type ProgressFn,
   type SnsLink,
   type TikTokMetadata,
-} from "./base";
+} from "../base";
 import {
   TikTokPostResponseSchema,
   type TikTokPostResponse,
-} from "./tiktokTypes";
-import { formatDiscordTitle, MAX_ATTACHMENTS_PER_MESSAGE } from "./util";
+} from "./types";
 
 const log = logger.child({ module: "TikTokDownloader" });
 

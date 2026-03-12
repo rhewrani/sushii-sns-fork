@@ -3,6 +3,14 @@
 
 // https://github.com/FixTweet/FxTwitter/blob/main/src/types/types.d.ts
 
+// Stub types referenced by internal interfaces
+type TweetMediaFormat = unknown;
+declare const enum DataProvider {
+  Twitter = "twitter",
+  Bsky = "bsky",
+}
+type BirdwatchEntity = unknown;
+
 type InputFlags = {
   standard?: boolean;
   direct?: boolean;

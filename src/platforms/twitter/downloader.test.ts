@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { type Platform } from "./base";
+import { type Platform } from "../base";
 
-import { formatDiscordTitle, getFileExtFromURL } from "./util";
+import { formatDiscordTitle } from "../../utils/discord";
+import { getFileExtFromURL } from "../../utils/http";
 
-import { InstagramPostDownloader } from "./instagramPost";
+import { InstagramPostDownloader } from "../instagram-post/downloader";
 
 describe("twitter", () => {
   describe("waitUntilDataReady", async () => {

@@ -1,3 +1,34 @@
+import dayjs from "dayjs";
+import timezone from "dayjs/plugin/timezone";
+import utc from "dayjs/plugin/utc";
+import { platformToString, type Platform } from "../platforms/base";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+export const KST_TIMEZONE = "Asia/Seoul";
+export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+
+export function formatDiscordTitle(
+  platform: Platform,
+  username: string,
+  date?: Date,
+): string {
+  const djs = dayjs(date).tz(KST_TIMEZONE);
+
+  let title = "`";
+  if (date) {
+    title += djs.format("YYMMDD");
+    title += " ";
+  }
+
+  const platformName = platformToString(platform);
+  title += `${username} ${platformName} Update`;
+  title += "`";
+
+  return title;
+}
+
 // joins items into a string with a separator, multiple chunks with max
 // length of 2000 characters
 export function itemsToMessageContents(

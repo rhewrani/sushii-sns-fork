@@ -1,5 +1,5 @@
 import { Attachment, type Message } from "discord.js";
-import logger from "../../logger";
+import logger from "../logger";
 import {
   SnsDownloader,
   type AnySnsMetadata,
@@ -7,11 +7,11 @@ import {
   type ProgressFn,
   type SnsLink,
   type SnsMetadata,
-} from "./downloaders/base";
-import { InstagramPostDownloader } from "./downloaders/instagramPost";
-import { InstagramStoryDownloader } from "./downloaders/instagramStory";
-import { TikTokDownloader } from "./downloaders/tiktok";
-import { TwitterDownloader } from "./downloaders/twitter";
+} from "../platforms/base";
+import { InstagramPostDownloader } from "../platforms/instagram-post/downloader";
+import { InstagramStoryDownloader } from "../platforms/instagram-story/downloader";
+import { TikTokDownloader } from "../platforms/tiktok/downloader";
+import { TwitterDownloader } from "../platforms/twitter/downloader";
 
 const log = logger.child({ module: "snsHandler" });
 

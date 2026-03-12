@@ -3,9 +3,11 @@ import {
   MessageFlags,
   type MessageCreateOptions,
 } from "discord.js";
-import logger from "../../../logger";
-import { chunkArray, itemsToMessageContents } from "../../util";
-import type { TweetAPIResponse } from "./../fxtweet";
+import logger from "../../logger";
+import { chunkArray, itemsToMessageContents } from "../../utils/discord";
+import { formatDiscordTitle, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
+import { fetchWithHeaders, getFileExtFromURL } from "../../utils/http";
+import type { TweetAPIResponse } from "./types";
 import {
   attachmentMessageContent,
   SnsDownloader,
@@ -13,13 +15,7 @@ import {
   type PostData,
   type SnsLink,
   type TwitterMetadata,
-} from "./base";
-import {
-  fetchWithHeaders,
-  formatDiscordTitle,
-  getFileExtFromURL,
-  MAX_ATTACHMENTS_PER_MESSAGE,
-} from "./util";
+} from "../base";
 
 const log = logger.child({ module: "TwitterDownloader" });
 

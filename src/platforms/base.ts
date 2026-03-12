@@ -1,5 +1,5 @@
 import { type MessageCreateOptions } from "discord.js";
-import logger from "../../../logger";
+import logger from "../logger";
 
 const log = logger.child({ module: "snsHandler" });
 

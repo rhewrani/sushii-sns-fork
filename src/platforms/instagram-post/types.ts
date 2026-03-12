@@ -1,6 +1,26 @@
-// Generated from quicktype https://app.quicktype.io/?l=ts
-
 import z from "zod";
+
+// Brightdata API types
+export const BdTriggerResponseSchema = z.object({
+  snapshot_id: z.string().optional(),
+});
+
+export type BdTriggerResponse = z.infer<typeof BdTriggerResponseSchema>;
+
+export const BdMonitorStatus = z.enum(["starting", "running", "ready", "failed"]);
+
+export const BdMonitorResponseSchema = z.object({
+  status: BdMonitorStatus,
+  snapshot_id: z.string().optional(),
+  // dataset_id: z.string().optional(),
+  // records: z.number().optional(),
+  errors: z.any().optional(),
+  // collection_duration: z.number().optional(),
+});
+export type BdMonitorResponse = z.infer<typeof BdMonitorResponseSchema>;
+
+// Instagram post types
+// Generated from quicktype https://app.quicktype.io/?l=ts
 
 export const TypeSchema = z.enum(["Photo", "Video"]);
 export type Type = z.infer<typeof TypeSchema>;

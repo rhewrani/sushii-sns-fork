@@ -1,7 +1,7 @@
 import type { Message } from "discord.js";
 import { MessageFlags } from "discord.js";
-import logger from "../../logger";
-import { itemsToMessageContents } from "../util";
+import logger from "../logger";
+import { itemsToMessageContents } from "../utils/discord";
 
 const log = logger.child({ module: "extractLinksHandler" });
 

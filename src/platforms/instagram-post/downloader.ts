@@ -4,19 +4,11 @@ import {
   MessageFlags,
   type MessageCreateOptions,
 } from "discord.js";
-import config from "../../../config/config";
-import logger from "../../../logger";
-import { chunkArray, itemsToMessageContents } from "../../util";
-import {
-  BdMonitorResponseSchema,
-  BdTriggerResponseSchema,
-  type BdMonitorResponse,
-  type BdTriggerResponse,
-} from "../bd";
-import {
-  InstagramPostListSchema,
-  type InstagramPostElement,
-} from "../instagram";
+import config from "../../config/config";
+import logger from "../../logger";
+import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
+import { getFileExtFromURL } from "../../utils/http";
+import { convertHeicToJpeg } from "../../utils/heic";
 import {
   attachmentMessageContent,
   SnsDownloader,
@@ -26,13 +18,15 @@ import {
   type PostData,
   type ProgressFn,
   type SnsLink,
-} from "./base";
-import { convertHeicToJpeg } from "./heic";
+} from "../base";
 import {
-  formatDiscordTitle,
-  getFileExtFromURL,
-  MAX_ATTACHMENTS_PER_MESSAGE,
-} from "./util";
+  BdMonitorResponseSchema,
+  BdTriggerResponseSchema,
+  type BdMonitorResponse,
+  type BdTriggerResponse,
+  InstagramPostListSchema,
+  type InstagramPostElement,
+} from "./types";
 
 const log = logger.child({ module: "InstagramPostDownloader" });
 

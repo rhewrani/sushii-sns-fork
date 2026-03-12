@@ -1,6 +1,6 @@
 import sharp from "sharp";
-import logger from "../../../logger";
-import type { File } from "./base";
+import logger from "../logger";
+import type { File } from "../platforms/base";
 
 const log = logger.child({ module: "heicConverter" });
 

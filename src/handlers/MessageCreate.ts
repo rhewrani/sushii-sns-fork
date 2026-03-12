@@ -1,8 +1,8 @@
 import type { Message } from "discord.js";
 import config from "../config/config";
 import logger from "../logger";
-import { extractLinksHandler } from "./links/handler";
-import { snsHandler } from "./sns/handler";
+import { extractLinksHandler } from "./links";
+import { snsHandler } from "./sns";
 
 const log = logger.child({ module: "MessageCreateHandler" });
 

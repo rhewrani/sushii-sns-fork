@@ -4,10 +4,11 @@ import {
   MessageFlags,
   type MessageCreateOptions,
 } from "discord.js";
-import config from "../../../config/config";
-import logger from "../../../logger";
-import { chunkArray, itemsToMessageContents } from "../../util";
-import { IgStoriesSchema, type IgStories } from "../igStories";
+import config from "../../config/config";
+import logger from "../../logger";
+import { chunkArray, formatDiscordTitle, itemsToMessageContents, KST_TIMEZONE, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
+import { getFileExtFromURL } from "../../utils/http";
+import { convertHeicToJpeg } from "../../utils/heic";
 import {
   attachmentMessageContent,
   SnsDownloader,
@@ -17,14 +18,8 @@ import {
   type PostData,
   type ProgressFn,
   type SnsLink,
-} from "./base";
-import { convertHeicToJpeg } from "./heic";
-import {
-  formatDiscordTitle,
-  getFileExtFromURL,
-  KST_TIMEZONE,
-  MAX_ATTACHMENTS_PER_MESSAGE,
-} from "./util";
+} from "../base";
+import { IgStoriesSchema, type IgStories } from "./types";
 
 const log = logger.child({ module: "InstagramStoryDownloader" });
 
