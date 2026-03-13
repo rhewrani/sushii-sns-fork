@@ -10,7 +10,6 @@ import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS
 import { getFileExtFromURL } from "../../utils/http";
 import { convertHeicToJpeg } from "../../utils/heic";
 import {
-  attachmentMessageContent,
   SnsDownloader,
   type File,
   type InstagramMetadata,
@@ -130,6 +129,13 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
       if (resParsed.status === "ready") {
         break;
       }
+
+      // Still processing ("starting" / "running") — wait before retrying
+      if (Date.now() > cancelAt) {
+        throw new Error("IG API timed out waiting for snapshot to be ready");
+      }
+
+      await sleep(1000);
     }
   }
 
@@ -342,7 +348,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
 
     return attachmentsChunks.map((chunk) => {
       return {
-        content: attachmentMessageContent(),
+        content: "",
         files: chunk,
       };
     });

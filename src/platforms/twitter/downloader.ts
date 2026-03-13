@@ -4,12 +4,10 @@ import {
   type MessageCreateOptions,
 } from "discord.js";
 import logger from "../../logger";
-import { chunkArray, itemsToMessageContents } from "../../utils/discord";
-import { formatDiscordTitle, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
+import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import { fetchWithHeaders, getFileExtFromURL } from "../../utils/http";
 import type { TweetAPIResponse } from "./types";
 import {
-  attachmentMessageContent,
   SnsDownloader,
   type Platform,
   type PostData,
@@ -130,7 +128,7 @@ export class TwitterDownloader extends SnsDownloader<TwitterMetadata> {
 
     return attachmentsChunks.map((chunk) => {
       return {
-        content: attachmentMessageContent(),
+        content: "",
         files: chunk,
       };
     });

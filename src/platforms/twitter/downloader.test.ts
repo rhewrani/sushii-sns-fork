@@ -1,93 +1,63 @@
 import { describe, expect, it } from "bun:test";
-import { type Platform } from "../base";
+import { TwitterDownloader } from "./downloader";
 
-import { formatDiscordTitle } from "../../utils/discord";
-import { getFileExtFromURL } from "../../utils/http";
+const dl = new TwitterDownloader();
 
-import { InstagramPostDownloader } from "../instagram-post/downloader";
-
-describe("twitter", () => {
-  describe("waitUntilDataReady", async () => {
-    const dl = new InstagramPostDownloader();
-
-    await dl.waitUntilDataReady("s_m4g93skg2rg9yz1ewi");
+describe("TwitterDownloader.findUrls", () => {
+  it("matches x.com status URL", () => {
+    const links = dl.findUrls("dl https://x.com/user/status/1234567890");
+    expect(links).toHaveLength(1);
+    expect(links[0].metadata).toEqual({
+      platform: "twitter",
+      username: "user",
+      id: "1234567890",
+    });
   });
 
-  describe("fetchSnapshotData", async () => {
-    const dl = new InstagramPostDownloader();
-
-    const data = await dl.fetchSnapshotData("s_m4g93skg2rg9yz1ewi");
-    expect(data).toBeDefined();
-    expect(data.user_posted).toBe("vampirehollie");
+  it("matches twitter.com status URL", () => {
+    const links = dl.findUrls("dl https://twitter.com/user/status/1234567890");
+    expect(links).toHaveLength(1);
+    expect(links[0].metadata.id).toBe("1234567890");
   });
 
-  describe("getFileExtFromURL", () => {
-    it("should return the correct file extension from a URL", () => {
-      const url =
-        "https://scontent-lhr8-1.cdninstagram.com/o1/v/t16/f2/m86/AQOYxXnje9MXjactoXrqtNo-5ZzRweEZL2ndQRhN2ihL5UcXnuX5gnp8VNCC_ECSNe5YUouQNumHZCTbae_82_B1C8ldGtfL9NCszJg.mp4?stp=dst-mp4&efg=eyJxZV9ncm91cHMiOiJbXCJpZ193ZWJfZGVsaXZlcnlfdnRzX290ZlwiXSIsInZlbmNvZGVfdGFnIjoidnRzX3ZvZF91cmxnZW4uY2xpcHMuYzIuNzIwLmJhc2VsaW5lIn0&_nc_cat=108&vs=1257991175450831_4046028505&_nc_vs=HBksFQIYUmlnX3hwdl9yZWVsc19wZXJtYW5lbnRfc3JfcHJvZC8wNjQyNkIyMDkxQjIyMTRGRTExQUFGMUVENzBFOTM5QV92aWRlb19kYXNoaW5pdC5tcDQVAALIAQAVAhg6cGFzc3Rocm91Z2hfZXZlcnN0b3JlL0dDZDEteHUwa01jM3p3c0NBTlEySkdPYVhzb1ZicV9FQUFBRhUCAsgBACgAGAAbABUAACaahd6Ao%2FuJQBUCKAJDMywXQDwqfvnbItEYEmRhc2hfYmFzZWxpbmVfMV92MREAdf4HAA%3D%3D&_nc_rid=ead5f10303&ccb=9-4&oh=00_AYDVA0i5rPwz_Csi5t1WcTpMwX4RpWPVGtxw9P2tDmUpGg&oe=6757FB4F&_nc_sid=4f4799";
-      const ext = getFileExtFromURL(url);
-      expect(ext).toBe("mp4");
-    });
+  it("matches www subdomain", () => {
+    const links = dl.findUrls("dl https://www.x.com/user/status/1234567890");
+    expect(links).toHaveLength(1);
+  });
 
-    it("should ignore params from a URL", () => {
-      const url = "https://example.com/image.png?param=1";
-      const ext = getFileExtFromURL(url);
-      expect(ext).toBe("png");
-    });
+  it("matches mobile subdomain", () => {
+    const links = dl.findUrls(
+      "dl https://mobile.twitter.com/user/status/1234567890",
+    );
+    expect(links).toHaveLength(1);
+  });
 
-    it("should return 'jpg' if no extension is found", () => {
-      const url = "https://example.com/image";
-      const ext = getFileExtFromURL(url);
-      expect(ext).toBe("jpg");
-    });
+  it("matches URL with photo suffix", () => {
+    const links = dl.findUrls(
+      "dl https://x.com/user/status/1234567890/photo/1",
+    );
+    expect(links).toHaveLength(1);
+    expect(links[0].metadata.id).toBe("1234567890");
+  });
 
-    describe("formatDiscordTitle", () => {
-      it("should format title with date", () => {
-        const platform: Platform = "twitter";
-        const username = "testuser";
-        const date = new Date("2023-10-01");
-        const title = formatDiscordTitle(platform, username, date);
-        expect(title).toBe("`231001 testuser Twitter Update`");
-      });
+  it("matches URL with query params", () => {
+    const links = dl.findUrls(
+      "dl https://x.com/user/status/1234567890?s=20",
+    );
+    expect(links).toHaveLength(1);
+  });
 
-      it("should format title with date in KST timezone", () => {
-        const platform: Platform = "twitter";
-        const username = "testuser";
-        // UTC timezone 4pm
-        const date = new Date("2023-10-01T16:00:00Z");
-        const title = formatDiscordTitle(platform, username, date);
+  it("finds multiple URLs in one message", () => {
+    const links = dl.findUrls(
+      "dl https://x.com/a/status/111 https://x.com/b/status/222",
+    );
+    expect(links).toHaveLength(2);
+    expect(links[0].metadata.id).toBe("111");
+    expect(links[1].metadata.id).toBe("222");
+  });
 
-        // Next day vs UTC
-        expect(title).toBe("`231002 testuser Twitter Update`");
-      });
-
-      it("should format title without date", () => {
-        const platform: Platform = "instagram";
-        const username = "testuser";
-        const title = formatDiscordTitle(platform, username);
-        expect(title).toBe("`testuser Instagram Update`");
-      });
-
-      it("should capitalize platform name", () => {
-        const platform: Platform = "twitter";
-        const username = "testuser";
-        const title = formatDiscordTitle(platform, username);
-        expect(title).toBe("`testuser Twitter Update`");
-      });
-
-      it("should handle empty username", () => {
-        const platform: Platform = "instagram";
-        const username = "";
-        const title = formatDiscordTitle(platform, username);
-        expect(title).toBe("` Instagram Update`");
-      });
-
-      it("should handle undefined date", () => {
-        const platform: Platform = "twitter";
-        const username = "testuser";
-        const title = formatDiscordTitle(platform, username, undefined);
-        expect(title).toBe("`testuser Twitter Update`");
-      });
-    });
+  it("returns empty for non-Twitter URLs", () => {
+    const links = dl.findUrls("dl https://instagram.com/p/ABC123/");
+    expect(links).toHaveLength(0);
   });
 });

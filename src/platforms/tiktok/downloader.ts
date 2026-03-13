@@ -8,7 +8,6 @@ import config from "../../config/config";
 import logger from "../../logger";
 import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import {
-  attachmentMessageContent,
   SnsDownloader,
   type Platform,
   type PostData,
@@ -73,10 +72,10 @@ export class TikTokDownloader extends SnsDownloader<TikTokMetadata> {
           responseCode: response.status,
           responseBody: await response.text(),
         },
-        "Failed to fetch ig API story response",
+        "Failed to fetch TikTok API response",
       );
 
-      throw new Error("Failed to fetch ig API story response");
+      throw new Error("Failed to fetch TikTok API response");
     }
 
     let rawJson;
@@ -109,9 +108,9 @@ export class TikTokDownloader extends SnsDownloader<TikTokMetadata> {
 
     log.debug(
       {
-        igStoriesRes: ttPost,
+        ttPost,
       },
-      "Fetched IG stories response",
+      "Fetched TikTok video response",
     );
 
     if (!ttPost.data || !ttPost.data.aweme_detail?.video?.play_addr?.url_list) {
@@ -177,7 +176,7 @@ export class TikTokDownloader extends SnsDownloader<TikTokMetadata> {
 
     return attachmentsChunks.map((chunk) => {
       return {
-        content: attachmentMessageContent(),
+        content: "",
         files: chunk,
       };
     });

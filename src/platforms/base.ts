@@ -1,7 +1,7 @@
 import { type MessageCreateOptions } from "discord.js";
 import logger from "../logger";
 
-const log = logger.child({ module: "snsHandler" });
+const log = logger.child({ module: "SnsDownloader" });
 
 export type Platform = "twitter" | "instagram" | "instagram-story" | "tiktok";
 
@@ -85,10 +85,6 @@ export interface PostData<M extends SnsMetadata> {
 }
 
 // --------------------------------------------------------------------------
-export function attachmentMessageContent(): string {
-  return "";
-}
-
 export type ProgressFn = (message: string, done?: boolean) => Promise<void>;
 
 export abstract class SnsDownloader<M extends SnsMetadata> {
@@ -160,10 +156,13 @@ export abstract class SnsDownloader<M extends SnsMetadata> {
    * Download images from URLs
    */
   protected async downloadImages(urls: string[]): Promise<Buffer[]> {
-    const ps = urls.map(async (url, i) => {
+    const ps = urls.map(async (url) => {
       const res = await fetch(url);
-      const buf = await res.arrayBuffer();
+      if (!res.ok) {
+        throw new Error(`Failed to download image (${res.status}): ${url}`);
+      }
 
+      const buf = await res.arrayBuffer();
       return Buffer.from(buf);
     });
 

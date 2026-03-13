@@ -1,6 +1,6 @@
 import { describe, expect, it, test } from "bun:test";
 import { type Platform } from "../platforms/base";
-import { chunkArray, formatDiscordTitle } from "./discord";
+import { chunkArray, formatDiscordTitle, itemsToMessageContents } from "./discord";
 
 describe("chunkArray", () => {
   test("should split array into chunks of specified size", () => {
@@ -85,5 +85,36 @@ describe("formatDiscordTitle", () => {
     const username = "testuser";
     const title = formatDiscordTitle(platform, username, undefined);
     expect(title).toBe("`testuser Twitter Update`");
+  });
+});
+
+describe("itemsToMessageContents", () => {
+  test("returns single message when items fit", () => {
+    const result = itemsToMessageContents("header\n", ["url1", "url2"]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe("header\nurl1\nurl2\n");
+  });
+
+  test("splits into multiple messages when exceeding 2000 chars", () => {
+    const longUrl = "https://example.com/" + "a".repeat(1000);
+    const result = itemsToMessageContents("", [longUrl, longUrl, longUrl]);
+    expect(result.length).toBeGreaterThan(1);
+  });
+
+  test("header only appears in first chunk", () => {
+    const longUrl = "https://example.com/" + "a".repeat(1000);
+    const result = itemsToMessageContents("header\n", [longUrl, longUrl, longUrl]);
+    expect(result[0]).toContain("header");
+    expect(result[1]).not.toContain("header");
+  });
+
+  test("returns empty array for no items and empty initial message", () => {
+    const result = itemsToMessageContents("", []);
+    expect(result).toHaveLength(0);
+  });
+
+  test("returns initial message when no items", () => {
+    const result = itemsToMessageContents("header\n", []);
+    expect(result).toEqual(["header\n"]);
   });
 });

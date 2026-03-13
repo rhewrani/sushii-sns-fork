@@ -53,10 +53,10 @@ function clientHealthy(client: Client): () => boolean {
 async function main(): Promise<void> {
   log.info(
     {
-      ...{
-        ...config,
-        DISCORD_TOKEN: "********",
-      },
+      ...config,
+      DISCORD_TOKEN: "********",
+      BD_API_TOKEN: "********",
+      RAPID_API_KEY: "********",
     },
     "Starting bot with config",
   );

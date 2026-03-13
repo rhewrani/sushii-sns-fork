@@ -10,7 +10,6 @@ import { chunkArray, formatDiscordTitle, itemsToMessageContents, KST_TIMEZONE, M
 import { getFileExtFromURL } from "../../utils/http";
 import { convertHeicToJpeg } from "../../utils/heic";
 import {
-  attachmentMessageContent,
   SnsDownloader,
   type File,
   type InstagramMetadata,
@@ -43,7 +42,7 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
 
   buildApiRequest(details: SnsLink<InstagramMetadata>): Request {
     return new Request(
-      `https://instagram-scraper-api2.p.rapidapi.com/v1/stories?username_or_id_or_url=${details.url}`,
+      `https://instagram-scraper-api2.p.rapidapi.com/v1/stories?username_or_id_or_url=${encodeURIComponent(details.url)}`,
       {
         method: "GET",
         headers: {
@@ -230,7 +229,7 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
 
     return attachmentsChunks.map((chunk) => {
       return {
-        content: attachmentMessageContent(),
+        content: "",
         files: chunk,
       };
     });

@@ -14,7 +14,7 @@ bun test             # Run tests (*.test.ts files)
 
 To run a single test file:
 ```bash
-bun test src/handlers/sns/downloaders/twitter.test.ts
+bun test src/platforms/twitter/downloader.test.ts
 ```
 
 ## Architecture
@@ -29,7 +29,7 @@ bun test src/handlers/sns/downloaders/twitter.test.ts
 
 ### SNS downloader pattern
 
-All downloaders live in `src/handlers/sns/downloaders/` and extend the abstract `SnsDownloader<M>` class (`base.ts`). Each downloader implements:
+All downloaders live in `src/platforms/<name>/downloader.ts` and extend the abstract `SnsDownloader<M>` class (`src/platforms/base.ts`). Each downloader implements:
 
 - `PLATFORM` — platform identifier string
 - `URL_REGEX` — regex to match platform URLs
@@ -39,29 +39,29 @@ All downloaders live in `src/handlers/sns/downloaders/` and extend the abstract 
 - `buildDiscordAttachments(postData)` — returns `MessageCreateOptions[]` with file buffers (sent first to get CDN URLs)
 - `buildDiscordMessages(postData, attachmentURLs)` — returns `MessageCreateOptions[]` with formatted text + CDN links
 
-The `snsHandler` in `src/handlers/sns/handler.ts` orchestrates: finds all links → streams results via async generator → sends attachments → sends formatted messages with CDN URLs.
+The `snsHandler` in `src/handlers/sns.ts` orchestrates: finds all links → streams results via async generator → sends attachments → sends formatted messages with CDN URLs.
 
 ### Platform implementations
 
-| File | Platform | API |
-|------|----------|-----|
-| `downloaders/twitter.ts` | Twitter/X | fxtwitter.com API |
-| `downloaders/instagramPost.ts` | Instagram posts/reels | Brightdata datasets API (async: trigger → poll progress → fetch snapshot) |
-| `downloaders/instagramStory.ts` | Instagram stories (profile URL) | RapidAPI instagram-scraper-api2 |
-| `downloaders/tiktok.ts` | TikTok | RapidAPI |
+| Directory | Platform | API |
+|-----------|----------|-----|
+| `src/platforms/twitter/` | Twitter/X | fxtwitter.com API |
+| `src/platforms/instagram-post/` | Instagram posts/reels | Brightdata datasets API (async: trigger → poll progress → fetch snapshot) |
+| `src/platforms/instagram-story/` | Instagram stories (profile URL) | RapidAPI instagram-scraper-api2 |
+| `src/platforms/tiktok/` | TikTok | RapidAPI |
 
 Instagram posts use an async scraping flow: trigger a snapshot job, poll `BdMonitorResponse` until `status === "ready"`, then fetch the snapshot data.
 
 ### Other handlers
 
-- `src/handlers/links/handler.ts` — triggered by reply with `links` command; extracts attachment URLs from the referenced message and sends them chunked into ≤2000-char messages.
-- `src/handlers/calendar/` — calendar utilities (types and helpers in `cal.ts`, `types.ts`, `utils.ts`).
+- `src/handlers/sns.ts` — orchestrates SNS downloads; triggered by messages starting with `dl`
+- `src/handlers/links.ts` — triggered by reply with `links` command; extracts attachment URLs from the referenced message and sends them chunked into ≤2000-char messages
 
 ### Utilities
 
-- `src/handlers/util.ts` — `itemsToMessageContents` (chunks URL lists into ≤2000-char Discord messages), `chunkArray`
-- `src/handlers/sns/downloaders/util.ts` — `formatDiscordTitle`, `getFileExtFromURL`, `fetchWithHeaders`, `MAX_ATTACHMENTS_PER_MESSAGE` (10), `KST_TIMEZONE`
-- `src/handlers/sns/downloaders/heic.ts` — converts HEIC buffers to JPEG via `sharp`
+- `src/utils/discord.ts` — `itemsToMessageContents` (chunks URL lists into ≤2000-char Discord messages), `chunkArray`, `formatDiscordTitle`, `MAX_ATTACHMENTS_PER_MESSAGE` (10), `KST_TIMEZONE`
+- `src/utils/http.ts` — `fetchWithHeaders` (adds User-Agent header), `getFileExtFromURL`
+- `src/utils/heic.ts` — converts HEIC buffers to JPEG via `sharp`
 - `src/logger.ts` — pino logger instance
 - `src/config/config.ts` — zod-validated env config (exits on invalid env)
 

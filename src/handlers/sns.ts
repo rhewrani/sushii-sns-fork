@@ -1,4 +1,4 @@
-import { Attachment, type Message } from "discord.js";
+import { type Attachment, type Message } from "discord.js";
 import logger from "../logger";
 import {
   SnsDownloader,
@@ -112,6 +112,7 @@ export async function snsHandler(msg: Message<true>): Promise<void> {
         // Delete when done
         if (done && progressMsg) {
           await progressMsg.delete();
+          progressMsg = null;
           return;
         }
 

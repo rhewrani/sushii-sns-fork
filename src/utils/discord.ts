@@ -40,7 +40,9 @@ export function itemsToMessageContents(
 
   for (const item of items) {
     if (currentMsg.length + item.length > 2000) {
-      msgs.push(currentMsg);
+      if (currentMsg.length > 0) {
+        msgs.push(currentMsg);
+      }
       currentMsg = "";
     }
 
