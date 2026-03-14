@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install
+      - run: bun test
+
+  docker-build:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: sushiibot/sushii-workflows/.github/workflows/docker-build.yml@main
+    with:
+      image_name: ghcr.io/sushiibot/sushii-sns
+    permissions:
+      contents: read
+      packages: write
