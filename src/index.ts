@@ -1,9 +1,13 @@
-// Require the necessary discord.js classes
 import type { Server } from "bun";
 import { Client, Events, GatewayIntentBits, Status } from "discord.js";
 import { Hono } from "hono";
 import config from "./config/config";
+import { loadServerConfig } from "./config/server_config";
 import { MessageCreateHandler } from "./handlers/MessageCreate";
+import { registerSlashCommands } from "./handlers/monitor/commands";
+import { loadMonitorsConfig } from "./handlers/monitor/config";
+import { openDb } from "./handlers/monitor/db";
+import { handleInteraction } from "./handlers/monitor/interactions";
 import logger from "./logger";
 
 const log = logger.child({ module: "bot" });
@@ -61,6 +65,14 @@ async function main(): Promise<void> {
     "Starting bot with config",
   );
 
+  const serverConfig = config.SERVER_CONFIG_PATH
+    ? loadServerConfig(config.SERVER_CONFIG_PATH)
+    : null;
+
+  if (serverConfig) {
+    log.info({ guilds: serverConfig.guilds.length }, "Server config loaded");
+  }
+
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -74,8 +86,30 @@ async function main(): Promise<void> {
   });
 
   client.on(Events.MessageCreate, async (message) => {
-    await MessageCreateHandler(message);
+    await MessageCreateHandler(message, serverConfig);
   });
+
+  if (config.MONITORS_CONFIG_PATH) {
+    const monitorsConfig = loadMonitorsConfig(config.MONITORS_CONFIG_PATH);
+    const monitorDb = openDb(config.DB_PATH);
+
+    await registerSlashCommands(config.APPLICATION_ID, config.DISCORD_TOKEN);
+
+    client.on(Events.InteractionCreate, async (interaction) => {
+      await handleInteraction(
+        interaction,
+        client,
+        monitorsConfig,
+        serverConfig,
+        monitorDb,
+      );
+    });
+
+    log.info(
+      { subscriptions: monitorsConfig.subscriptions.length },
+      "Monitor feature enabled",
+    );
+  }
 
   const httpServer = await startHealthCheckServer(clientHealthy(client));
   log.info({ port: httpServer.port }, "Health check server started");

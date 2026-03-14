@@ -18,6 +18,11 @@ const schema = z.object({
     .default(""),
 
   SENTRY_DSN: z.string().optional(),
+
+  SERVER_CONFIG_PATH: z.string().optional(),
+
+  MONITORS_CONFIG_PATH: z.string().optional(),
+  DB_PATH: z.string().optional().default("./data.db"),
 });
 
 const parsed = schema.safeParse(process.env);

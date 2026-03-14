@@ -75,4 +75,4 @@ RAPID_API_KEY       # RapidAPI key for Instagram stories and TikTok
 CHANNEL_ID_WHITELIST  # Comma-separated Discord channel IDs
 ```
 
-Optional: `LOG_LEVEL` (default: `info`), `SENTRY_DSN`
+Optional: `LOG_LEVEL` (default: `info`), `SENTRY_DSN`, `SERVER_CONFIG_PATH`, `MONITORS_CONFIG_PATH`, `DB_PATH` (default: `./monitors.db`)
