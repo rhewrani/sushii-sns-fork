@@ -33,3 +33,18 @@ jobs:
     permissions:
       contents: read
       packages: write
+
+  cleanup:
+    needs: docker-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Delete old package versions
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: sushii-sns
+          package-type: container
+          min-versions-to-keep: 5
+          ignore-versions: "^latest$"
