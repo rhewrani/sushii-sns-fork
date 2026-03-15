@@ -4,9 +4,9 @@ import {
   MessageFlags,
   type MessageCreateOptions,
 } from "discord.js";
-import config from "../../config/config";
 import logger from "../../logger";
 import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
+import { buildLinksFormatMessages } from "../../utils/template";
 import {
   SnsDownloader,
   type Platform,
@@ -52,7 +52,7 @@ export class TikTokDownloader extends SnsDownloader<TikTokMetadata> {
         method: "GET",
         headers: {
           "x-rapidapi-host": "tiktok-best-experience.p.rapidapi.com",
-          "x-rapidapi-key": config.RAPID_API_KEY,
+          "x-rapidapi-key": process.env.RAPID_API_KEY!,
         },
       },
     );
@@ -185,7 +185,12 @@ export class TikTokDownloader extends SnsDownloader<TikTokMetadata> {
   buildDiscordMessages(
     postData: PostData<TikTokMetadata>,
     attachmentURLs: string[],
+    template?: string,
   ): MessageCreateOptions[] {
+    if (template) {
+      return buildLinksFormatMessages(template, postData, attachmentURLs);
+    }
+
     let msgs: MessageCreateOptions[] = [];
 
     let mainPostContent = "";

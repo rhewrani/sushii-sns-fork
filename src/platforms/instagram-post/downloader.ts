@@ -4,11 +4,11 @@ import {
   MessageFlags,
   type MessageCreateOptions,
 } from "discord.js";
-import config from "../../config/config";
 import logger from "../../logger";
 import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import { getFileExtFromURL } from "../../utils/http";
 import { convertHeicToJpeg } from "../../utils/heic";
+import { buildLinksFormatMessages } from "../../utils/template";
 import {
   SnsDownloader,
   type File,
@@ -54,25 +54,24 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${config.BD_API_TOKEN}`,
+          Authorization: `Bearer ${process.env.BD_API_TOKEN!}`,
         },
         body: JSON.stringify([{ url: details.url }]),
       },
     );
   }
 
-  async waitUntilDataReady(snapshotID: string): Promise<void> {
+  async waitUntilDataReady(snapshotID: string, timeoutMs = 30_000): Promise<void> {
     const req = new Request(
       `https://api.brightdata.com/datasets/v3/progress/${snapshotID}`,
       {
         headers: {
-          Authorization: `Bearer ${config.BD_API_TOKEN}`,
+          Authorization: `Bearer ${process.env.BD_API_TOKEN!}`,
         },
       },
     );
 
-    // set time to cancel by, 30 seconds later
-    let cancelAt = Date.now() + 30 * 1000;
+    let cancelAt = Date.now() + timeoutMs;
 
     let resParsed: BdMonitorResponse;
     while (true) {
@@ -139,14 +138,14 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
     }
   }
 
-  async fetchSnapshotData(snapshotID: string): Promise<InstagramPostElement> {
+  async fetchAllSnapshotData(snapshotID: string): Promise<InstagramPostElement[]> {
     // 5 retries
     for (let i = 0; i < 5; i++) {
       const req = new Request(
         `https://api.brightdata.com/datasets/v3/snapshot/${snapshotID}?format=json`,
         {
           headers: {
-            Authorization: `Bearer ${config.BD_API_TOKEN}`,
+            Authorization: `Bearer ${process.env.BD_API_TOKEN!}`,
           },
         },
       );
@@ -184,14 +183,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
 
       try {
         const rawJson = await response.json();
-        // List of posts
-        const posts = InstagramPostListSchema.parse(rawJson);
-        if (posts.length === 0) {
-          throw new Error("No Instagram posts found");
-        }
-
-        // Only one post
-        return posts[0];
+        return InstagramPostListSchema.parse(rawJson);
       } catch (err) {
         log.error(
           {
@@ -207,6 +199,14 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
     }
 
     throw new Error("Failed to fetch ig API response after 5 tries");
+  }
+
+  async fetchSnapshotData(snapshotID: string): Promise<InstagramPostElement> {
+    const posts = await this.fetchAllSnapshotData(snapshotID);
+    if (posts.length === 0) {
+      throw new Error("No Instagram posts found");
+    }
+    return posts[0];
   }
 
   async fetchContent(
@@ -357,7 +357,12 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
   buildDiscordMessages(
     postData: PostData<InstagramMetadata>,
     attachmentURLs: string[],
+    template?: string,
   ): MessageCreateOptions[] {
+    if (template) {
+      return buildLinksFormatMessages(template, postData, attachmentURLs);
+    }
+
     let msgs: MessageCreateOptions[] = [];
 
     let mainPostContent = "";

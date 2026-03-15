@@ -4,11 +4,11 @@ import {
   MessageFlags,
   type MessageCreateOptions,
 } from "discord.js";
-import config from "../../config/config";
 import logger from "../../logger";
 import { chunkArray, formatDiscordTitle, itemsToMessageContents, KST_TIMEZONE, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import { getFileExtFromURL } from "../../utils/http";
 import { convertHeicToJpeg } from "../../utils/heic";
+import { buildLinksFormatMessages } from "../../utils/template";
 import {
   SnsDownloader,
   type File,
@@ -47,7 +47,7 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
         method: "GET",
         headers: {
           "x-rapidapi-host": "instagram-scraper-api2.p.rapidapi.com",
-          "x-rapidapi-key": config.RAPID_API_KEY,
+          "x-rapidapi-key": process.env.RAPID_API_KEY!,
         },
       },
     );
@@ -238,7 +238,12 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
   buildDiscordMessages(
     postData: PostData<InstagramMetadata>,
     attachmentURLs: string[],
+    template?: string,
   ): MessageCreateOptions[] {
+    if (template) {
+      return buildLinksFormatMessages(template, postData, attachmentURLs);
+    }
+
     let msgs: MessageCreateOptions[] = [];
 
     let mainPostContent = "";

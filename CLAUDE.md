@@ -10,6 +10,7 @@ bun dev              # Run with pino-pretty log formatting (development)
 bun start            # Run without log formatting (production-like)
 bun run typecheck    # TypeScript type checking (no emit)
 bun test             # Run tests (*.test.ts files)
+INTEGRATION=1 bun test  # Also run integration tests (real API calls)
 ```
 
 To run a single test file:
