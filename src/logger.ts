@@ -1,20 +1,12 @@
 import pino from "pino";
-import config from "./config/config";
 
 const logger = pino({
-  level: config.LOG_LEVEL,
+  level: process.env.LOG_LEVEL ?? "info",
   formatters: {
     level(label) {
       return { level: label };
     },
   },
 });
-
-logger.info(
-  {
-    level: logger.level,
-  },
-  "Logger initialized",
-);
 
 export default logger;
