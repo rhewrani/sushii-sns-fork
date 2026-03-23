@@ -1,112 +1,205 @@
 import { Database } from "bun:sqlite";
+import { dirname, join } from "path";
 import logger from "../../logger";
-import { MIGRATIONS } from "./schema";
+import { existsSync, mkdirSync, readdirSync } from "fs";
+import { CONNECTION_MIGRATIONS, METADATA_MIGRATIONS } from "./schema";
 
 const log = logger.child({ module: "monitor/db" });
 
-export type MonitorMessage = {
-  ig_username: string;
-  guild_id: string;
-  channel_id: string;
-  message_id: string;
-};
+let metadataDbPathForConnections: string | null = null;
 
 export type LastFetch = {
-  ig_username: string;
   last_fetched_at: number;
   last_fetched_by: string;
 };
 
-function runMigrations(db: Database): void {
+export type PanelMessage = {
+  panel_channel_id: string;
+  message_id: string;
+};
+
+export type ConnectionMeta = {
+  connection_id: string;
+  last_fetched_at: number;
+  last_fetched_by: string;
+};
+
+function runMigrations(db: Database, migrations: string[][]): void {
   const row = db.query("PRAGMA user_version").get() as { user_version: number };
   const currentVersion = row.user_version;
 
-  for (let i = currentVersion; i < MIGRATIONS.length; i++) {
+  for (let i = currentVersion; i < migrations.length; i++) {
     log.info({ version: i }, "Running DB migration");
-    for (const sql of MIGRATIONS[i]) {
+    for (const sql of migrations[i]) {
       db.exec(sql);
     }
     db.exec(`PRAGMA user_version = ${i + 1}`);
   }
 }
 
-export function openDb(path: string): Database {
+export function openMetadataDb(path: string): Database {
+  metadataDbPathForConnections = path;
   const db = new Database(path, { create: true });
 
   db.exec("PRAGMA journal_mode=WAL;");
-
-  runMigrations(db);
+  runMigrations(db, METADATA_MIGRATIONS);
+  // Safety: if the DB was created with an older monitor schema, PRAGMA user_version
+  // may prevent our migrations from running. Ensure the new tables exist anyway.
+  for (const migration of METADATA_MIGRATIONS) {
+    for (const sql of migration) db.exec(sql);
+  }
 
   return db;
 }
 
-export function getLastFetch(
+export function getPanelMessage(
   db: Database,
-  igUsername: string,
-): LastFetch | null {
+  panelChannelId: string,
+): PanelMessage | null {
   const row = db
-    .query<LastFetch, [string]>(
-      "SELECT ig_username, last_fetched_at, last_fetched_by FROM monitor_fetches WHERE ig_username = ?",
+    .query<PanelMessage, [string]>(
+      "SELECT panel_channel_id, message_id FROM monitor_panel_messages WHERE panel_channel_id = ?",
     )
-    .get(igUsername);
+    .get(panelChannelId);
   return row ?? null;
 }
 
-export function upsertLastFetch(
+export function upsertPanelMessage(
   db: Database,
-  igUsername: string,
+  panelChannelId: string,
+  messageId: string,
+): void {
+  db.query(
+    "INSERT INTO monitor_panel_messages (panel_channel_id, message_id) VALUES (?, ?) ON CONFLICT(panel_channel_id) DO UPDATE SET message_id = excluded.message_id",
+  ).run(panelChannelId, messageId);
+}
+
+export function getConnectionMeta(
+  db: Database,
+  connectionId: string,
+): LastFetch | null {
+  const row = db
+    .query<ConnectionMeta, [string]>(
+      "SELECT connection_id, last_fetched_at, last_fetched_by FROM monitor_connection_meta WHERE connection_id = ?",
+    )
+    .get(connectionId);
+  return row
+    ? {
+        last_fetched_at: row.last_fetched_at,
+        last_fetched_by: row.last_fetched_by,
+      }
+    : null;
+}
+
+export function upsertConnectionMeta(
+  db: Database,
+  connectionId: string,
   lastFetchedAt: number,
   lastFetchedBy: string,
 ): void {
   db.query(
-    "INSERT INTO monitor_fetches (ig_username, last_fetched_at, last_fetched_by) VALUES (?, ?, ?) ON CONFLICT(ig_username) DO UPDATE SET last_fetched_at = excluded.last_fetched_at, last_fetched_by = excluded.last_fetched_by",
-  ).run(igUsername, lastFetchedAt, lastFetchedBy);
+    "INSERT INTO monitor_connection_meta (connection_id, last_fetched_at, last_fetched_by) VALUES (?, ?, ?) ON CONFLICT(connection_id) DO UPDATE SET last_fetched_at = excluded.last_fetched_at, last_fetched_by = excluded.last_fetched_by",
+  ).run(connectionId, lastFetchedAt, lastFetchedBy);
 }
 
-export function isPostSeen(
-  db: Database,
-  igUsername: string,
-  postId: string,
-): boolean {
-  const row = db
-    .query<{ count: number }, [string, string]>(
-      "SELECT COUNT(*) as count FROM monitor_seen_posts WHERE ig_username = ? AND post_id = ?",
+function sanitizeConnectionIdForFile(connectionId: string): string {
+  // Encode then replace `%` to avoid odd edge-cases on Windows paths.
+  return encodeURIComponent(connectionId).replace(/%/g, "_");
+}
+
+function getConnectionDbPath(metadataDbPath: string, connectionId: string): string {
+  const baseDir = dirname(metadataDbPath);
+  const connectionsDir = getConnectionsDbDir(baseDir);
+  const fileName = `${sanitizeConnectionIdForFile(connectionId)}.db`;
+  return join(connectionsDir, fileName);
+}
+
+function getConnectionsDbDir(baseDir: string): string {
+  return join(baseDir, "connections-db");
+}
+
+function openConnectionDb(connectionDbPath: string): Database {
+  const db = new Database(connectionDbPath, { create: true });
+  db.exec("PRAGMA journal_mode=WAL;");
+  runMigrations(db, CONNECTION_MIGRATIONS);
+  // Safety: same as metadata DB — ensure the required tables exist.
+  for (const migration of CONNECTION_MIGRATIONS) {
+    for (const sql of migration) db.exec(sql);
+  }
+  return db;
+}
+
+const connectionDbCache = new Map<string, Database>();
+
+export function getConnectionDb(
+  connectionId: string,
+): Database {
+  if (!metadataDbPathForConnections) {
+    throw new Error("openMetadataDb() must be called before getConnectionDb()");
+  }
+
+  const connectionDbPath = getConnectionDbPath(metadataDbPathForConnections, connectionId);
+  const cached = connectionDbCache.get(connectionDbPath);
+  if (cached) return cached;
+
+  // Ensure folder exists before sqlite opens/creates.
+  mkdirSync(dirname(connectionDbPath), { recursive: true });
+  const db = openConnectionDb(connectionDbPath);
+  connectionDbCache.set(connectionDbPath, db);
+  return db;
+}
+
+export function isPostSeen(connectionDb: Database, postId: string): boolean {
+  const row = connectionDb
+    .query<{ count: number }, [string]>(
+      "SELECT COUNT(*) as count FROM seen_posts WHERE post_id = ?",
     )
-    .get(igUsername, postId);
+    .get(postId);
   return (row?.count ?? 0) > 0;
 }
 
-export function markPostSeen(
-  db: Database,
-  igUsername: string,
-  postId: string,
-): void {
-  db.query(
-    "INSERT OR IGNORE INTO monitor_seen_posts (ig_username, post_id, seen_at) VALUES (?, ?, ?)",
-  ).run(igUsername, postId, Date.now());
-}
-
-export function getMonitorMessage(
-  db: Database,
-  igUsername: string,
-  channelId: string,
-): MonitorMessage | null {
-  const row = db
-    .query<MonitorMessage, [string, string]>(
-      "SELECT ig_username, guild_id, channel_id, message_id FROM monitor_messages WHERE ig_username = ? AND channel_id = ?",
+export function markPostSeen(connectionDb: Database, postId: string): void {
+  connectionDb
+    .query(
+      "INSERT OR IGNORE INTO seen_posts (post_id, seen_at) VALUES (?, ?)",
     )
-    .get(igUsername, channelId);
-  return row ?? null;
+    .run(postId, Date.now());
 }
 
-export function upsertMonitorMessage(
-  db: Database,
-  igUsername: string,
-  guildId: string,
-  channelId: string,
-  messageId: string,
-): void {
-  db.query(
-    "INSERT INTO monitor_messages (ig_username, guild_id, channel_id, message_id) VALUES (?, ?, ?, ?) ON CONFLICT(ig_username, channel_id) DO UPDATE SET message_id = excluded.message_id, guild_id = excluded.guild_id",
-  ).run(igUsername, guildId, channelId, messageId);
+export function purgeConnectionMeta(db: Database, connectionId: string): void {
+  db.query("DELETE FROM monitor_connection_meta WHERE connection_id = ?").run(connectionId);
+}
+
+export function purgeAllConnectionMeta(db: Database): void {
+  db.exec("DELETE FROM monitor_connection_meta");
+}
+
+export function purgeConnectionSeenPosts(connectionId: string): void {
+  const connectionDb = getConnectionDb(connectionId);
+  connectionDb.exec("DELETE FROM seen_posts");
+}
+
+export function purgeAllSeenPosts(): void {
+  if (!metadataDbPathForConnections) {
+    throw new Error("openMetadataDb() must be called before purgeAllSeenPosts()");
+  }
+
+  const baseDir = dirname(metadataDbPathForConnections);
+  const connectionsDir = getConnectionsDbDir(baseDir);
+  if (!existsSync(connectionsDir)) return;
+
+  // Purge already-open DB handles.
+  for (const db of connectionDbCache.values()) {
+    db.exec("DELETE FROM seen_posts");
+  }
+
+  // Purge all .db files in the directory (including ones not yet opened in cache).
+  const fileNames = readdirSync(connectionsDir);
+  for (const fileName of fileNames) {
+    if (!fileName.endsWith(".db")) continue;
+    const path = join(connectionsDir, fileName);
+    const db = new Database(path, { create: true });
+    db.exec("DELETE FROM seen_posts");
+    db.close();
+  }
 }

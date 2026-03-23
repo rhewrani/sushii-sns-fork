@@ -6,15 +6,16 @@ import { loadServerConfig } from "./config/server_config";
 import { MessageCreateHandler } from "./handlers/MessageCreate";
 import { registerSlashCommands } from "./handlers/monitor/commands";
 import { loadMonitorsConfig } from "./handlers/monitor/config";
-import { openDb } from "./handlers/monitor/db";
+import { openMetadataDb } from "./handlers/monitor/db";
 import { handleInteraction } from "./handlers/monitor/interactions";
+import { isDevMode } from "./handlers/monitor/runtime";
 import logger from "./logger";
 
 const log = logger.child({ module: "bot" });
 
 async function startHealthCheckServer(
   healthyFn: () => boolean,
-): Promise<Server> {
+): Promise<Server<any>> {
   const app = new Hono();
 
   app.get("/", (c) => c.text("Hono!"));
@@ -55,12 +56,14 @@ function clientHealthy(client: Client): () => boolean {
 }
 
 async function main(): Promise<void> {
+  const monitorDevMode = isDevMode();
   log.info(
     {
       ...config,
       DISCORD_TOKEN: "********",
       BD_API_TOKEN: "********",
       RAPID_API_KEY: "********",
+      MONITOR_DEV_MODE: monitorDevMode,
     },
     "Starting bot with config",
   );
@@ -86,12 +89,17 @@ async function main(): Promise<void> {
   });
 
   client.on(Events.MessageCreate, async (message) => {
-    await MessageCreateHandler(message, serverConfig);
+    await MessageCreateHandler(message);
   });
 
   if (config.MONITORS_CONFIG_PATH) {
-    const monitorsConfig = loadMonitorsConfig(config.MONITORS_CONFIG_PATH);
-    const monitorDb = openDb(config.DB_PATH);
+    const monitorsConfigPath = config.MONITORS_CONFIG_PATH;
+    let monitorsConfig = loadMonitorsConfig(monitorsConfigPath);
+    const monitorDb = openMetadataDb(config.DB_PATH);
+    const reloadMonitorsConfig = () => {
+      monitorsConfig = loadMonitorsConfig(monitorsConfigPath);
+      return monitorsConfig;
+    };
 
     await registerSlashCommands(config.APPLICATION_ID, config.DISCORD_TOKEN);
 
@@ -102,11 +110,13 @@ async function main(): Promise<void> {
         monitorsConfig,
         serverConfig,
         monitorDb,
+        monitorsConfigPath,
+        reloadMonitorsConfig,
       );
     });
 
     log.info(
-      { subscriptions: monitorsConfig.subscriptions.length },
+      { connections: monitorsConfig.connections.length },
       "Monitor feature enabled",
     );
   }

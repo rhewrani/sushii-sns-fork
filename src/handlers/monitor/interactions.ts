@@ -2,13 +2,12 @@ import type { Database } from "bun:sqlite";
 import {
   ActionRowBuilder,
   AttachmentBuilder,
-  DiscordAPIError,
   MessageFlags,
   ModalBuilder,
-  PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
   TextDisplayBuilder,
+  PermissionFlagsBits,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Client,
@@ -26,18 +25,27 @@ import {
 } from "../../utils/template";
 import type { MonitorsConfig } from "./config";
 import {
-  findSubscriptionByChannel,
-  findSubscriptionByUsername,
+  findConnectionById,
+  getConnectionId,
+  saveMonitorsConfig,
 } from "./config";
-import { markPostSeen, getLastFetch, getMonitorMessage, upsertMonitorMessage } from "./db";
-import { buildStatusEmbed, buildReviewComponents } from "./embed";
-import { fetchAndPost } from "./fetch";
+import {
+  getConnectionMeta,
+  getPanelMessage,
+  purgeAllConnectionMeta,
+  purgeAllSeenPosts,
+  purgeConnectionMeta,
+  purgeConnectionSeenPosts,
+  upsertPanelMessage,
+} from "./db";
+import { buildPanelEmbed, buildReviewComponents } from "./embed";
+import { fetchConnectionAndCreateReviews } from "./fetch";
+import { sendMonitorLog } from "./log_channel";
 import {
   getReview,
   updateReview,
   deleteReview,
-  MONITOR_FETCH_PREFIX,
-  MONITOR_STATUS_PREFIX,
+  MONITOR_POLL_PREFIX,
   REVIEW_REMOVE_PREFIX,
   REVIEW_EDIT_PREFIX,
   REVIEW_MODAL_PREFIX,
@@ -52,123 +60,176 @@ const log = logger.child({ module: "monitor/interactions" });
 // Existing handlers
 // ---------------------------------------------------------------------------
 
-async function handleStatusButton(
+const pollInProgress = new Set<string>();
+
+async function handlePanelPollButton(
   interaction: ButtonInteraction,
-  igUsername: string,
+  connectionId: string,
   monitorsConfig: MonitorsConfig,
-  db: Database,
+  serverConfig: ServerConfig | null,
+  client: Client,
+  metadataDb: Database,
 ): Promise<void> {
-  await interaction.deferUpdate();
-
-  const subscription = findSubscriptionByUsername(monitorsConfig, igUsername);
-  if (!subscription) {
-    return;
-  }
-
-  const lastFetch = getLastFetch(db, igUsername);
-  const embedData = buildStatusEmbed(
-    igUsername,
-    subscription.fetch_cooldown_seconds,
-    lastFetch,
-  );
-
-  await interaction.message.edit(embedData);
-}
-
-async function handleMonitorEmbedCommand(
-  interaction: ChatInputCommandInteraction,
-  monitorsConfig: MonitorsConfig,
-  db: Database,
-): Promise<void> {
-  if (!interaction.guildId) {
-    await interaction.reply({ content: "Must be used in a guild.", ephemeral: true });
-    return;
-  }
-
-  // Double-check permissions
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+  // Ensure poll is executed from the configured panel channel.
+  if (interaction.channelId !== monitorsConfig.panel_channel_id) {
     await interaction.reply({
-      content: "You need the Manage Guild permission to use this command.",
+      content: "This button is only valid in the panel channel.",
       ephemeral: true,
     });
     return;
   }
 
-  const igUsername = interaction.options.getString("username", true);
-
-  // Verify channel is a configured watcher for this username
-  const result = findSubscriptionByChannel(
-    monitorsConfig,
-    interaction.channelId,
-  );
-
-  if (!result || result[0].ig_username !== igUsername) {
-    await interaction.reply({
-      content: `This channel is not configured as a watcher for @${igUsername}.`,
-      ephemeral: true,
-    });
+  const connection = findConnectionById(monitorsConfig, connectionId);
+  if (!connection) {
+    await interaction.reply({ content: "Unknown connection.", ephemeral: true });
     return;
   }
 
-  const [subscription] = result;
-  const lastFetch = getLastFetch(db, igUsername);
-  const embedData = buildStatusEmbed(
-    igUsername,
-    subscription.fetch_cooldown_seconds,
-    lastFetch,
-  );
+  // Role check (optional).
+  if (monitorsConfig.trigger_role_id) {
+    const member = interaction.member;
+    if (!member) {
+      await interaction.reply({ content: "Could not verify your roles.", ephemeral: true });
+      return;
+    }
 
-  // Check if there's an existing embed message
-  const stored = getMonitorMessage(db, igUsername, interaction.channelId);
-
-  if (stored) {
-    // Try to edit existing message
-    try {
-      const channel = interaction.channel;
-      if (channel) {
-        const existingMsg = await channel.messages.fetch(stored.message_id);
-        await existingMsg.edit(embedData);
-        await interaction.reply({ content: "Monitor embed updated.", ephemeral: true });
-        return;
-      }
-    } catch (err) {
-      if (!(err instanceof DiscordAPIError && err.code === 10008)) {
-        log.error(err, "Failed to edit existing monitor embed");
-        await interaction.reply({ content: "Failed to update embed.", ephemeral: true });
-        return;
-      }
-      // Message was deleted — fall through to post new
-      log.warn({ igUsername }, "Existing monitor embed was deleted, posting new one");
+    const roles = "cache" in member.roles ? member.roles.cache : null;
+    if (!roles || !roles.has(monitorsConfig.trigger_role_id)) {
+      await interaction.reply({
+        content: "You don't have the required role to poll.",
+        ephemeral: true,
+      });
+      return;
     }
   }
 
-  // Post new embed
-  await interaction.deferReply({ ephemeral: true });
+  // Cooldown check.
+  const lastFetch = getConnectionMeta(metadataDb, connectionId);
+  if (lastFetch) {
+    const nextPollAt =
+      lastFetch.last_fetched_at + connection.cooldown_seconds * 1000;
+    if (Date.now() < nextPollAt) {
+      const nextPollSec = Math.floor(nextPollAt / 1000);
+      await interaction.reply({
+        content: `On cooldown. Next poll available <t:${nextPollSec}:R>.`,
+        ephemeral: true,
+      });
+      return;
+    }
+  }
 
-  const channel = interaction.channel;
-  if (!channel || !("send" in channel)) {
-    await interaction.editReply("Cannot send in this channel.");
+  if (pollInProgress.has(connectionId)) {
+    await interaction.reply({
+      content: "A poll is already running for this connection. Please wait.",
+      ephemeral: true,
+    });
     return;
   }
 
-  const msg = await (channel as SendableChannels).send(embedData);
+  pollInProgress.add(connectionId);
+  try {
+    await sendMonitorLog(
+      client,
+      monitorsConfig,
+      `Poll started: \`${connectionId}\` by ${interaction.user.username}`,
+    );
 
-  // Pin the message
+    await fetchConnectionAndCreateReviews(
+      interaction,
+      client,
+      monitorsConfig,
+      serverConfig,
+      metadataDb,
+      connectionId,
+    );
+
+    // Refresh the panel embed using latest metadata.
+    const panelMessage = getPanelMessage(metadataDb, monitorsConfig.panel_channel_id);
+    if (!panelMessage) return;
+
+    const channel = await client.channels.fetch(monitorsConfig.panel_channel_id);
+    if (!channel || !channel.isTextBased()) return;
+
+    const msg = await channel.messages.fetch(panelMessage.message_id);
+
+    const connectionsMeta = monitorsConfig.connections.map((c) => {
+      const id = getConnectionId(c);
+      return {
+        connectionId: id,
+        label: `${c.type}/${c.handle}`,
+        cooldownSeconds: c.cooldown_seconds,
+        lastFetch: getConnectionMeta(metadataDb, id),
+      };
+    });
+
+    const embedData = buildPanelEmbed(connectionsMeta as any);
+    await msg.edit(embedData);
+
+    await sendMonitorLog(
+      client,
+      monitorsConfig,
+      `Poll finished: \`${connectionId}\` by ${interaction.user.username}`,
+    );
+  } finally {
+    pollInProgress.delete(connectionId);
+  }
+}
+
+function buildPanelConnectionsMeta(
+  monitorsConfig: MonitorsConfig,
+  metadataDb: Database,
+) {
+  return monitorsConfig.connections.map((c) => {
+    const id = getConnectionId(c);
+    return {
+      connectionId: id,
+      label: `${c.type}/${c.handle}`,
+      cooldownSeconds: c.cooldown_seconds,
+      lastFetch: getConnectionMeta(metadataDb, id),
+    };
+  });
+}
+
+async function refreshPanelEmbed(
+  client: Client,
+  monitorsConfig: MonitorsConfig,
+  metadataDb: Database,
+): Promise<boolean> {
+  const panelMessage = getPanelMessage(metadataDb, monitorsConfig.panel_channel_id);
+  if (!panelMessage) return false;
+
+  const channel = await client.channels.fetch(monitorsConfig.panel_channel_id);
+  if (!channel || !channel.isTextBased()) return false;
+
+  const msg = await channel.messages.fetch(panelMessage.message_id);
+  const connectionsMeta = buildPanelConnectionsMeta(monitorsConfig, metadataDb);
+  const embedData = buildPanelEmbed(connectionsMeta as any);
+  await msg.edit(embedData);
+  return true;
+}
+
+async function postAndPinPanelEmbed(
+  interaction: ChatInputCommandInteraction,
+  client: Client,
+  monitorsConfig: MonitorsConfig,
+  metadataDb: Database,
+): Promise<void> {
+  if (!interaction.channel || !("send" in interaction.channel)) {
+    throw new Error("Cannot send in this channel.");
+  }
+
+  const connectionsMeta = buildPanelConnectionsMeta(monitorsConfig, metadataDb);
+  const embedData = buildPanelEmbed(connectionsMeta as any);
+
+  const msg = await (interaction.channel as SendableChannels).send(embedData);
+
   try {
     await msg.pin();
   } catch (err) {
-    log.warn(err, "Failed to pin monitor embed");
+    log.warn(err, "Failed to pin panel embed");
   }
 
-  upsertMonitorMessage(
-    db,
-    igUsername,
-    interaction.guildId,
-    interaction.channelId,
-    msg.id,
-  );
-
-  await interaction.editReply("Monitor embed posted and pinned.");
+  upsertPanelMessage(metadataDb, monitorsConfig.panel_channel_id, msg.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +326,6 @@ async function handleReviewModalSubmit(
 async function handleReviewPost(
   interaction: ButtonInteraction,
   reviewId: string,
-  db: Database,
 ): Promise<void> {
   const state = getReviewOrWarn(reviewId);
   if (!state) {
@@ -298,95 +358,96 @@ async function handleReviewPost(
 
   const filteredPostData = { ...state.postData, files: filteredFiles };
 
-  let postedToAny = false;
+  let postedToSocials = false;
+  try {
+    const channel = await interaction.client.channels.fetch(state.socialsChannelId);
+    if (!channel || !channel.isTextBased() || !("send" in channel)) {
+      await interaction.followUp({ content: "Socials channel not sendable.", ephemeral: true });
+      return;
+    }
+    const sendable = channel as SendableChannels;
 
-  for (const cfg of state.channelConfigs) {
-    try {
-      const channel = await interaction.client.channels.fetch(cfg.channelId);
-      if (!channel || !channel.isTextBased() || !("send" in channel)) {
-        log.warn({ channelId: cfg.channelId }, "Watcher channel not sendable");
-        continue;
-      }
-      const sendable = channel as SendableChannels;
-
-      if (state.customContent !== null) {
-        // Custom content overrides the template
-        if (cfg.format === "inline") {
-          const attachments = filteredFiles.map((f, i) =>
-            new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
-          );
-          const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
-          for (let i = 0; i < chunks.length; i++) {
-            await sendable.send({
-              content: i === 0 ? state.customContent : undefined,
-              files: chunks[i],
-              flags: MessageFlags.SuppressEmbeds,
-            });
-          }
-        } else {
-          // links format: upload attachments first to get CDN URLs, then combine
-          // custom text + CDN URLs into message(s) (same as buildLinksFormatMessages)
-          const attachmentMsgs = chunkArray(
-            filteredFiles.map((f, i) =>
-              new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
-            ),
-            MAX_ATTACHMENTS_PER_MESSAGE,
-          );
-          const cdnUrls: string[] = [];
-          for (const chunk of attachmentMsgs) {
-            const sent = await sendable.send({ files: chunk });
-            for (const att of sent.attachments.values()) {
-              cdnUrls.push(att.url);
-            }
-          }
-          for (const chunk of itemsToMessageContents(state.customContent, cdnUrls)) {
-            await sendable.send({ content: chunk, flags: MessageFlags.SuppressEmbeds });
-          }
-        }
-      } else if (cfg.format === "inline") {
-        const content = buildInlineFormatContent(cfg.template, filteredPostData);
+    if (state.customContent !== null) {
+      // Custom content overrides the template.
+      if (state.format === "inline") {
         const attachments = filteredFiles.map((f, i) =>
           new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
         );
         const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
         for (let i = 0; i < chunks.length; i++) {
           await sendable.send({
-            content: i === 0 ? content : undefined,
+            content: i === 0 ? state.customContent : undefined,
             files: chunks[i],
             flags: MessageFlags.SuppressEmbeds,
           });
         }
       } else {
-        // links format
-        const attachments = filteredFiles.map((f, i) =>
-          new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
+        // links format: upload attachments first to get CDN URLs, then combine
+        // custom text + CDN URLs into message(s).
+        const attachmentMsgs = chunkArray(
+          filteredFiles.map((f, i) =>
+            new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
+          ),
+          MAX_ATTACHMENTS_PER_MESSAGE,
         );
-        const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
         const cdnUrls: string[] = [];
-        for (const chunk of chunks) {
-          const sent = await sendable.send({ files: chunk });
+        for (const chunk of attachmentMsgs) {
+          const sent = await sendable.send({ files: chunk, flags: MessageFlags.SuppressEmbeds });
           for (const att of sent.attachments.values()) {
             cdnUrls.push(att.url);
           }
         }
-        const textMsgs = buildLinksFormatMessages(cfg.template, filteredPostData, cdnUrls);
-        for (const msg of textMsgs) {
-          await sendable.send(msg);
+
+        for (const chunk of itemsToMessageContents(state.customContent, cdnUrls)) {
+          await sendable.send({ content: chunk, flags: MessageFlags.SuppressEmbeds });
+        }
+      }
+    } else if (state.format === "inline") {
+      const content = buildInlineFormatContent(state.template, filteredPostData as any);
+      const attachments = filteredFiles.map((f, i) =>
+        new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
+      );
+      const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
+      for (let i = 0; i < chunks.length; i++) {
+        await sendable.send({
+          content: i === 0 ? content : undefined,
+          files: chunks[i],
+          flags: MessageFlags.SuppressEmbeds,
+        });
+      }
+    } else {
+      // links format
+      const attachments = filteredFiles.map((f, i) =>
+        new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
+      );
+      const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
+      const cdnUrls: string[] = [];
+      for (const chunk of chunks) {
+        const sent = await sendable.send({ files: chunk, flags: MessageFlags.SuppressEmbeds });
+        for (const att of sent.attachments.values()) {
+          cdnUrls.push(att.url);
         }
       }
 
-      postedToAny = true;
-    } catch (err) {
-      log.error({ err, channelId: cfg.channelId }, "Failed to post to watcher channel");
+      const textMsgs = buildLinksFormatMessages(state.template, filteredPostData as any, cdnUrls);
+      for (const msg of textMsgs) {
+        await sendable.send(msg);
+      }
     }
+
+    postedToSocials = true;
+  } catch (err) {
+    log.error({ err, channelId: state.socialsChannelId }, "Failed to post to socials channel");
   }
 
-  if (!postedToAny) {
-    await interaction.followUp({ content: "Failed to post to any channel. Please try again.", ephemeral: true });
+  if (!postedToSocials) {
+    await interaction.followUp({
+      content: "Failed to post to socials. Please try again.",
+      ephemeral: true,
+    });
     return;
   }
 
-  markPostSeen(db, state.igUsername, state.postData.postID);
   deleteReview(reviewId);
 
   await interaction.message.edit({
@@ -397,7 +458,6 @@ async function handleReviewPost(
 async function handleReviewSkip(
   interaction: ButtonInteraction,
   reviewId: string,
-  db: Database,
 ): Promise<void> {
   const state = getReviewOrWarn(reviewId);
   if (!state) {
@@ -415,7 +475,6 @@ async function handleReviewSkip(
 
   await interaction.deferUpdate();
 
-  markPostSeen(db, state.igUsername, state.postData.postID);
   deleteReview(reviewId);
 
   await interaction.message.edit({
@@ -433,6 +492,8 @@ export async function handleInteraction(
   monitorsConfig: MonitorsConfig,
   serverConfig: ServerConfig | null,
   db: Database,
+  monitorsConfigPath: string,
+  reloadMonitorsConfig: () => MonitorsConfig,
 ): Promise<void> {
   try {
     if (interaction.isStringSelectMenu()) {
@@ -456,14 +517,16 @@ export async function handleInteraction(
     if (interaction.isButton()) {
       const customId = interaction.customId;
 
-      if (customId.startsWith(MONITOR_FETCH_PREFIX)) {
-        await fetchAndPost(interaction, client, monitorsConfig, serverConfig, db);
-        return;
-      }
-
-      if (customId.startsWith(MONITOR_STATUS_PREFIX)) {
-        const igUsername = customId.slice(MONITOR_STATUS_PREFIX.length);
-        await handleStatusButton(interaction, igUsername, monitorsConfig, db);
+      if (customId.startsWith(MONITOR_POLL_PREFIX)) {
+        const connectionId = customId.slice(MONITOR_POLL_PREFIX.length);
+        await handlePanelPollButton(
+          interaction,
+          connectionId,
+          monitorsConfig,
+          serverConfig,
+          client,
+          db,
+        );
         return;
       }
 
@@ -475,23 +538,198 @@ export async function handleInteraction(
 
       if (customId.startsWith(REVIEW_POST_PREFIX)) {
         const reviewId = customId.slice(REVIEW_POST_PREFIX.length);
-        await handleReviewPost(interaction, reviewId, db);
+        await handleReviewPost(interaction, reviewId);
         return;
       }
 
       if (customId.startsWith(REVIEW_SKIP_PREFIX)) {
         const reviewId = customId.slice(REVIEW_SKIP_PREFIX.length);
-        await handleReviewSkip(interaction, reviewId, db);
+        await handleReviewSkip(interaction, reviewId);
         return;
       }
     }
 
     if (interaction.isChatInputCommand()) {
-      if (
-        interaction.commandName === "monitor" &&
-        interaction.options.getSubcommand() === "embed"
-      ) {
-        await handleMonitorEmbedCommand(interaction, monitorsConfig, db);
+      const cmd = interaction as ChatInputCommandInteraction;
+
+      if (cmd.commandName !== "monitor") return;
+
+      if (!cmd.guildId) {
+        await cmd.reply({ content: "Must be used in a guild.", ephemeral: true });
+        return;
+      }
+
+      // Commands that change config require guild admin.
+      if (!cmd.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+        await cmd.reply({
+          content: "You need Manage Guild permission to use this command.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const group = cmd.options.getSubcommandGroup(false);
+      const sub = cmd.options.getSubcommand(true);
+
+      if (group === "panel" && sub === "setup") {
+        await cmd.deferReply({ ephemeral: true });
+
+        if (cmd.channelId !== monitorsConfig.panel_channel_id) {
+          await cmd.editReply({
+            content:
+              "Run this command in the configured panel channel (panel_channel_id).",
+          });
+          return;
+        }
+
+        if (await refreshPanelEmbed(client, monitorsConfig, db)) {
+          await cmd.editReply({ content: "Panel embed refreshed." });
+          return;
+        }
+
+        try {
+          await postAndPinPanelEmbed(cmd, client, monitorsConfig, db);
+          await cmd.editReply({ content: "Panel embed posted and pinned." });
+        } catch {
+          await cmd.editReply({ content: "Failed to post panel embed." });
+        }
+        return;
+      }
+
+      if (group === "panel" && sub === "refresh") {
+        await cmd.deferReply({ ephemeral: true });
+
+        if (!(await refreshPanelEmbed(client, monitorsConfig, db))) {
+          await cmd.editReply({ content: "Panel embed not found. Run panel setup first." });
+          return;
+        }
+
+        await cmd.editReply({ content: "Panel embed refreshed." });
+        return;
+      }
+
+      if (group === "connections" && sub === "add") {
+        await cmd.deferReply({ ephemeral: true });
+
+        const type = cmd.options.getString("type", true) as MonitorsConfig["connections"][number]["type"];
+        const handle = cmd.options.getString("handle", true);
+        const cooldownSeconds = cmd.options.getInteger("cooldown_seconds", true);
+
+        const updated: MonitorsConfig = {
+          ...monitorsConfig,
+          connections: [...monitorsConfig.connections],
+        };
+
+        const idx = updated.connections.findIndex(
+          (c) => c.type === type && c.handle === handle,
+        );
+        if (idx >= 0) {
+          updated.connections[idx] = { ...updated.connections[idx], cooldown_seconds: cooldownSeconds };
+        } else {
+          updated.connections.push({ type, handle, cooldown_seconds: cooldownSeconds });
+        }
+
+        saveMonitorsConfig(monitorsConfigPath, updated);
+        const reloaded = reloadMonitorsConfig();
+        await sendMonitorLog(
+          client,
+          reloaded,
+          `Connection added/updated: \`${type}:${handle}\` by ${cmd.user.username}`,
+        );
+
+        if (!(await refreshPanelEmbed(client, reloaded, db))) {
+          await cmd.editReply({ content: "Connection saved. Run panel setup first to show buttons." });
+          return;
+        }
+
+        await cmd.editReply({ content: "Connection added/updated and panel refreshed." });
+        return;
+      }
+
+      if (group === "connections" && sub === "remove") {
+        await cmd.deferReply({ ephemeral: true });
+
+        const type = cmd.options.getString("type", true) as MonitorsConfig["connections"][number]["type"];
+        const handle = cmd.options.getString("handle", true);
+        const purgeDb = cmd.options.getBoolean("purge_db") ?? false;
+
+        const updated: MonitorsConfig = {
+          ...monitorsConfig,
+          connections: monitorsConfig.connections.filter(
+            (c) => !(c.type === type && c.handle === handle),
+          ),
+        };
+
+        saveMonitorsConfig(monitorsConfigPath, updated);
+        const reloaded = reloadMonitorsConfig();
+        await sendMonitorLog(
+          client,
+          reloaded,
+          `Connection removed: \`${type}:${handle}\` by ${cmd.user.username}`,
+        );
+
+        if (purgeDb) {
+          const connectionId = `${type}:${handle}`;
+          try {
+            purgeConnectionSeenPosts(connectionId);
+            purgeConnectionMeta(db, connectionId);
+          } catch (err) {
+            log.warn({ err, connectionId }, "Failed to purge seen_posts for connection");
+          }
+        }
+
+        if (!(await refreshPanelEmbed(client, reloaded, db))) {
+          await cmd.editReply({ content: "Connection removed. Run panel setup first to show buttons." });
+          return;
+        }
+
+        await cmd.editReply({ content: "Connection removed and panel refreshed." });
+        return;
+      }
+
+      if (group === "db" && sub === "purge-connection") {
+        await cmd.deferReply({ ephemeral: true });
+
+        const type = cmd.options.getString("type", true);
+        const handle = cmd.options.getString("handle", true);
+        const connectionId = `${type}:${handle}`;
+
+        try {
+          purgeConnectionSeenPosts(connectionId);
+          purgeConnectionMeta(db, connectionId);
+        } catch (err) {
+          log.error({ err, connectionId }, "Failed to purge connection DB");
+          await cmd.editReply({ content: "Failed to purge connection DB." });
+          return;
+        }
+
+        await sendMonitorLog(
+          client,
+          monitorsConfig,
+          `DB purged for connection: \`${connectionId}\` by ${cmd.user.username}`,
+        );
+        await cmd.editReply({ content: `Purged DB for \`${connectionId}\`.` });
+        return;
+      }
+
+      if (group === "db" && sub === "purge-all") {
+        await cmd.deferReply({ ephemeral: true });
+
+        try {
+          purgeAllSeenPosts();
+          purgeAllConnectionMeta(db);
+        } catch (err) {
+          log.error({ err }, "Failed to purge all monitor DB state");
+          await cmd.editReply({ content: "Failed to purge all monitor DB state." });
+          return;
+        }
+
+        await sendMonitorLog(
+          client,
+          monitorsConfig,
+          `DB purged for ALL connections by ${cmd.user.username}`,
+        );
+        await cmd.editReply({ content: "Purged DB for all connections." });
         return;
       }
     }

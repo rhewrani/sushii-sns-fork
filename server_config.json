@@ -1,0 +1,8 @@
+{
+  "guilds": [
+    {
+      "guild_id": "",
+      "template": "`{date_kst} {username} SNS Update`\n<{post_url}>\n{caption}"
+    }
+  ]
+}

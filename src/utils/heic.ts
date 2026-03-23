@@ -14,14 +14,11 @@ export async function convertHeicToJpeg(files: File[]): Promise<File[]> {
       const jpgBuffer = await sharp(file.buffer).jpeg().toBuffer();
       file.buffer = jpgBuffer;
       file.ext = "jpg";
-      log.debug("Converted HEIC to JPG", { index: idx });
+      log.debug({ index: idx }, "Converted HEIC to JPG");
 
       return file;
     } catch (err) {
-      log.error("Failed to convert HEIC to JPG", {
-        index: idx,
-        error: err,
-      });
+      log.error({ index: idx, error: err }, "Failed to convert HEIC to JPG");
 
       // Re-throw, will be caught by the caller
       throw err;

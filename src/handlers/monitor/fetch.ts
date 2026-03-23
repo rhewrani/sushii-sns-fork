@@ -1,41 +1,33 @@
 import type { Database } from "bun:sqlite";
 import {
   AttachmentBuilder,
-  DiscordAPIError,
-  GuildMember,
   type ButtonInteraction,
   type Client,
   type SendableChannels,
 } from "discord.js";
 import config from "../../config/config";
 import type { ServerConfig } from "../../config/server_config";
-import { getGuildTemplate } from "../../config/server_config";
 import logger from "../../logger";
 import { InstagramPostDownloader } from "../../platforms/instagram-post/downloader";
 import {
   BdTriggerResponseSchema,
   type InstagramPostElement,
 } from "../../platforms/instagram-post/types";
-import type { InstagramMetadata, PostData } from "../../platforms/base";
+import type { AnySnsMetadata, InstagramMetadata, PostData } from "../../platforms/base";
 import { getFileExtFromURL } from "../../utils/http";
 import { convertHeicToJpeg } from "../../utils/heic";
+import { buildInlineFormatContent } from "../../utils/template";
+import type { MonitorsConfig } from "./config";
+import { findConnectionById } from "./config";
+import { isDevMode, loadMockJson } from "./runtime";
 import {
-  buildInlineFormatContent,
-  DEFAULT_LINKS_TEMPLATE,
-  DEFAULT_INLINE_TEMPLATE,
-} from "../../utils/template";
-import type { MonitorsConfig, Subscription } from "./config";
-import {
-  findSubscriptionByChannel,
-} from "./config";
-import {
-  getLastFetch,
   isPostSeen,
-  upsertLastFetch,
-  getMonitorMessage,
+  getConnectionDb,
+  markPostSeen,
+  upsertConnectionMeta,
 } from "./db";
-import { buildStatusEmbed, buildReviewMessage } from "./embed";
-import { createReview, deleteReview, type ChannelConfig } from "./review";
+import { buildReviewMessage } from "./embed";
+import { createReview, deleteReview, type ReviewState } from "./review";
 
 const log = logger.child({ module: "monitor/fetch" });
 
@@ -51,6 +43,10 @@ const fetchingInProgress = new Set<string>();
 export async function fetchIgProfilePosts(
   igUsername: string,
 ): Promise<InstagramPostElement[]> {
+  if (isDevMode()) {
+    return loadMockJson<InstagramPostElement[]>("instagram-posts.json");
+  }
+
   const profileUrl = `https://www.instagram.com/${igUsername}/`;
 
   const triggerReq = new Request(
@@ -143,233 +139,380 @@ async function buildPostData(
   };
 }
 
-/**
- * Update all embed messages for a subscription across all watcher channels.
- */
-export async function updateAllEmbeds(
-  igUsername: string,
-  subscription: Subscription,
-  client: Client,
-  db: Database,
-): Promise<void> {
-  const lastFetch = getLastFetch(db, igUsername);
-
-  for (const watcher of subscription.watchers) {
-    const stored = getMonitorMessage(db, igUsername, watcher.channel_id);
-    if (!stored) continue;
-
-    try {
-      const channel = await client.channels.fetch(watcher.channel_id);
-      if (!channel || !channel.isTextBased()) continue;
-
-      const msg = await channel.messages.fetch(stored.message_id);
-      const embedData = buildStatusEmbed(
-        igUsername,
-        subscription.fetch_cooldown_seconds,
-        lastFetch,
-      );
-      await msg.edit(embedData);
-    } catch (err) {
-      if (err instanceof DiscordAPIError && err.code === 10008) {
-        log.warn(
-          { igUsername, channelId: watcher.channel_id },
-          "Monitor embed message was deleted, skipping update",
-        );
-      } else {
-        log.error(err, "Failed to update monitor embed");
-      }
-    }
-  }
+function getDisplayName(interaction: ButtonInteraction): string {
+  const member = interaction.member as any;
+  const memberDisplayName = member && typeof member.displayName === "string" ? member.displayName : null;
+  return (
+    memberDisplayName ??
+    interaction.user.displayName ??
+    interaction.user.username
+  );
 }
 
-/**
- * Main fetch-and-post handler triggered by the "Fetch New Posts" button.
- */
-export async function fetchAndPost(
+async function downloadFilesFromUrls(urls: string[]) {
+  const buffers = await Promise.all(
+    urls.map(async (url) => {
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Failed to download media (${res.status}): ${url}`);
+      }
+      return Buffer.from(await res.arrayBuffer());
+    }),
+  );
+
+  return convertHeicToJpeg(
+    buffers.map((buf, i) => ({
+      ext: getFileExtFromURL(urls[i]),
+      buffer: buf,
+    })),
+  );
+}
+
+async function fetchInstagramStoriesRapidApi(
+  igUsername: string,
+): Promise<PostData<AnySnsMetadata>[]> {
+  if (isDevMode()) {
+    const mock = loadMockJson<any>("instagram-stories.json");
+    const items: any[] = Array.isArray(mock?.result) ? mock.result : [];
+    return buildStoryPostDataFromRapidApi(igUsername, items);
+  }
+
+  const req = new Request(
+    "https://instagram120.p.rapidapi.com/api/instagram/stories",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-rapidapi-host": "instagram120.p.rapidapi.com",
+        "x-rapidapi-key": config.RAPID_API_KEY,
+      },
+      body: JSON.stringify({ username: igUsername }),
+    },
+  );
+
+  const res = await fetch(req);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch instagram stories (${res.status})`);
+  }
+
+  const json: any = await res.json();
+
+  // RapidAPI responses can vary; normalize into a flat list of story items.
+  const resultItems: any[] = Array.isArray(json?.result) ? json.result : [];
+  const nestedItems: any[] = resultItems.flatMap((entry: any) => {
+    if (Array.isArray(entry?.items)) return entry.items;
+    if (Array.isArray(entry?.stories)) return entry.stories;
+    if (Array.isArray(entry?.result)) return entry.result;
+    return [];
+  });
+  const items: any[] = nestedItems.length > 0 ? nestedItems : resultItems;
+
+  return buildStoryPostDataFromRapidApi(igUsername, items);
+}
+
+async function buildStoryPostDataFromRapidApi(
+  igUsername: string,
+  items: any[],
+): Promise<PostData<AnySnsMetadata>[]> {
+  const out: PostData<AnySnsMetadata>[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+
+    const candidateUrls: string[] = Array.isArray(item?.candidates)
+      ? item.candidates
+          .map((c: any) => c?.url)
+          .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+      : [];
+
+    const imageVersionCandidateUrls: string[] = Array.isArray(item?.image_versions2?.candidates)
+      ? item.image_versions2.candidates
+          .map((c: any) => c?.url)
+          .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+      : [];
+
+    const videoUrls: string[] = Array.isArray(item?.video_versions)
+      ? item.video_versions
+          .map((v: any) => v?.url)
+          .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+      : [];
+
+    const mediaUrls = [...videoUrls, ...candidateUrls, ...imageVersionCandidateUrls];
+    if (mediaUrls.length === 0) continue;
+
+    const files = await downloadFilesFromUrls([mediaUrls[0]]);
+    const storyId = String(item?.id ?? item?.pk ?? `story-${igUsername}-${i}`);
+
+    out.push({
+      postLink: {
+        url: `https://www.instagram.com/${igUsername}/`,
+        metadata: { platform: "instagram-story" as const },
+      },
+      username: igUsername,
+      postID: `ig-story:${igUsername}:${storyId}`,
+      originalText: "",
+      timestamp: item?.taken_at ? new Date(Number(item.taken_at) * 1000) : undefined,
+      files,
+    });
+  }
+
+  return out;
+}
+
+async function fetchTiktokFeedRapidApi(
+  handle: string,
+): Promise<PostData<AnySnsMetadata>[]> {
+  if (isDevMode()) {
+    const mock = loadMockJson<any>("tiktok-feed.json");
+    return buildTiktokPostDataFromRapidApi(handle, mock);
+  }
+
+  const req = new Request(
+    `https://tiktok-best-experience.p.rapidapi.com/user/${encodeURIComponent(handle)}/feed`,
+    {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "x-rapidapi-host": "tiktok-best-experience.p.rapidapi.com",
+        "x-rapidapi-key": config.RAPID_API_KEY,
+      },
+    },
+  );
+
+  const res = await fetch(req);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch tiktok feed (${res.status})`);
+  }
+
+  const json: any = await res.json();
+  return buildTiktokPostDataFromRapidApi(handle, json);
+}
+
+async function buildTiktokPostDataFromRapidApi(
+  handle: string,
+  json: any,
+): Promise<PostData<AnySnsMetadata>[]> {
+  const awemeList: any[] = Array.isArray(json?.data?.aweme_list)
+    ? json.data.aweme_list
+    : [];
+
+  const out: PostData<AnySnsMetadata>[] = [];
+  for (const aweme of awemeList) {
+    const awemeId = String(aweme?.aweme_id ?? "");
+    if (!awemeId) continue;
+
+    const videoUrls: string[] = Array.isArray(aweme?.video?.play_addr?.url_list)
+      ? aweme.video.play_addr.url_list.filter(
+          (u: unknown): u is string => typeof u === "string" && u.length > 0,
+        )
+      : [];
+
+    const imageUrls: string[] = Array.isArray(aweme?.image_post_info?.images)
+      ? aweme.image_post_info.images
+          .flatMap((img: any) =>
+            Array.isArray(img?.display_image?.url_list) ? img.display_image.url_list : [],
+          )
+          .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+      : [];
+
+    const mediaUrls = videoUrls.length > 0 ? [videoUrls[0]] : imageUrls;
+    if (mediaUrls.length === 0) continue;
+
+    const files = await downloadFilesFromUrls(mediaUrls);
+    const username = aweme?.author?.unique_id || handle;
+    const postUrl =
+      aweme?.share_url || `https://www.tiktok.com/@${username}/video/${awemeId}`;
+
+    out.push({
+      postLink: {
+        url: postUrl,
+        metadata: { platform: "tiktok" as const, videoId: awemeId },
+      },
+      username,
+      postID: awemeId,
+      originalText: aweme?.desc || "",
+      timestamp: aweme?.create_time ? new Date(Number(aweme.create_time) * 1000) : undefined,
+      files,
+    });
+  }
+
+  return out;
+}
+
+async function buildTwitterPostDataFromMock(): Promise<PostData<AnySnsMetadata>[]> {
+  const json = loadMockJson<any>("twitter-feed.json");
+  const items: any[] = Array.isArray(json?.data) ? json.data : [];
+
+  const out: PostData<AnySnsMetadata>[] = [];
+  for (const item of items) {
+    const postId = String(item?.post_id ?? item?.id ?? "");
+    const username = String(item?.username ?? "unknown");
+    const postUrl = String(item?.post_url ?? "");
+    const mediaUrls: string[] = Array.isArray(item?.media_urls)
+      ? item.media_urls.filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+      : [];
+
+    if (!postId || !postUrl || mediaUrls.length === 0) continue;
+
+    const files = await downloadFilesFromUrls(mediaUrls);
+    out.push({
+      postLink: {
+        url: postUrl,
+        metadata: { platform: "twitter", username, id: postId },
+      },
+      username,
+      postID: postId,
+      originalText: String(item?.caption ?? item?.text ?? ""),
+      timestamp: item?.timestamp ? new Date(item.timestamp) : undefined,
+      files,
+    });
+  }
+
+  return out;
+}
+
+async function fetchInstagramConnectionPosts(
+  igUsername: string,
+): Promise<PostData<AnySnsMetadata>[]> {
+  const [profilePosts, storyPosts] = await Promise.all([
+    fetchIgProfilePosts(igUsername),
+    fetchInstagramStoriesRapidApi(igUsername),
+  ]);
+
+  const postDatasFromProfile = await Promise.all(
+    profilePosts.map((p) => buildPostData(p, igUsername)),
+  );
+
+  const profileDatas = postDatasFromProfile.filter(
+    (x): x is PostData<InstagramMetadata> => x !== null,
+  );
+
+  return [...profileDatas, ...storyPosts] as PostData<AnySnsMetadata>[];
+}
+
+export async function fetchConnectionAndCreateReviews(
   interaction: ButtonInteraction,
   client: Client,
   monitorsConfig: MonitorsConfig,
   serverConfig: ServerConfig | null,
-  db: Database,
+  metadataDb: Database,
+  connectionId: string,
 ): Promise<void> {
   await interaction.deferReply({ ephemeral: true });
 
-  const result = findSubscriptionByChannel(
-    monitorsConfig,
-    interaction.channelId,
-  );
-
-  if (!result) {
-    await interaction.editReply(
-      "This channel is not configured as a monitor watcher.",
-    );
+  const connection = findConnectionById(monitorsConfig, connectionId);
+  if (!connection) {
+    await interaction.editReply({ content: "Unknown connection." });
     return;
   }
 
-  const [subscription, watcher] = result;
-  const { ig_username: igUsername } = subscription;
-
-  // Role check
-  if (watcher.allowed_role_id) {
-    const member = interaction.member;
-    if (!member) {
-      await interaction.editReply("Could not verify your roles.");
-      return;
-    }
-
-    const roles =
-      "cache" in member.roles
-        ? member.roles.cache
-        : null;
-
-    if (!roles || !roles.has(watcher.allowed_role_id)) {
-      await interaction.editReply(
-        "You don't have the required role to fetch posts.",
-      );
-      return;
-    }
-  }
-
-  // Cooldown check
-  const lastFetch = getLastFetch(db, igUsername);
-  if (lastFetch) {
-    const nextFetchAt =
-      lastFetch.last_fetched_at + subscription.fetch_cooldown_seconds * 1000;
-    if (Date.now() < nextFetchAt) {
-      const nextFetchSec = Math.floor(nextFetchAt / 1000);
-      await interaction.editReply(
-        `On cooldown. Next fetch available <t:${nextFetchSec}:R>.`,
-      );
-      return;
-    }
-  }
-
-  if (fetchingInProgress.has(igUsername)) {
-    await interaction.editReply(
-      "A fetch is already in progress for this profile. Please wait.",
-    );
+  if (fetchingInProgress.has(connectionId)) {
+    await interaction.editReply("A poll is already running for this connection. Please wait.");
     return;
   }
 
-  const reviewChannel = interaction.channel;
-  if (!reviewChannel || !("send" in reviewChannel)) {
-    await interaction.editReply("Cannot send review messages in this channel.");
-    return;
-  }
-
-  await interaction.editReply("Fetching new posts...");
-
-  fetchingInProgress.add(igUsername);
+  fetchingInProgress.add(connectionId);
   try {
-    let igPosts: InstagramPostElement[];
-    try {
-      igPosts = await fetchIgProfilePosts(igUsername);
-    } catch (err) {
-      log.error(err, "Failed to fetch IG profile posts");
-      await interaction.editReply(
-        "Failed to fetch posts from Instagram. Please try again.",
-      );
+    await interaction.editReply("Fetching latest posts...");
+
+    const connectionDb = getConnectionDb(connectionId);
+
+    let posts: PostData<AnySnsMetadata>[] = [];
+    if (connection.type === "instagram") {
+      try {
+        posts = await fetchInstagramConnectionPosts(connection.handle);
+      } catch (err) {
+        log.error({ err, igUsername: connection.handle }, "Failed to fetch Instagram connection");
+        await interaction.editReply("Failed to fetch Instagram posts/stories. Please try again.");
+        return;
+      }
+    } else if (connection.type === "tiktok") {
+      try {
+        posts = await fetchTiktokFeedRapidApi(connection.handle);
+      } catch (err) {
+        log.error({ err, handle: connection.handle }, "Failed to fetch TikTok feed");
+        await interaction.editReply("Failed to fetch TikTok feed. Please try again.");
+        return;
+      }
+    } else if (connection.type === "twitter") {
+      if (isDevMode()) {
+        try {
+          posts = await buildTwitterPostDataFromMock();
+        } catch (err) {
+          log.error({ err }, "Failed to parse twitter mock data");
+          await interaction.editReply("Failed to parse twitter mock data.");
+          return;
+        }
+      } else {
+      log.warn({ connectionId }, "Twitter polling not implemented yet (API endpoints TBD).");
+      await interaction.editReply("Twitter polling not implemented yet.");
+      upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
       return;
+      }
     }
 
-    log.debug({ igUsername, count: igPosts.length }, "Fetched IG profile posts");
-
-    // Filter to unseen posts with a valid post_id
-    const newPosts = igPosts.filter(
-      (p) => p.post_id && !isPostSeen(db, igUsername, p.post_id),
-    );
-
-    log.debug(
-      { igUsername, newCount: newPosts.length },
-      "New unseen IG posts",
-    );
+    // Filter unseen posts for this connection.
+    const newPosts = posts.filter((p) => {
+      if (!p.postID) return false;
+      return !isPostSeen(connectionDb, p.postID);
+    });
 
     if (newPosts.length === 0) {
-      // Still update last fetch time and embeds
-      const member = interaction.member;
-      const displayName =
-        (member instanceof GuildMember ? member.displayName : null) ??
-        interaction.user.displayName ??
-        interaction.user.username;
-
-      upsertLastFetch(db, igUsername, Date.now(), displayName);
-      await updateAllEmbeds(igUsername, subscription, client, db);
-
+      upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
       await interaction.editReply("No new posts found.");
       return;
     }
 
-    // Build per-watcher channel configs once (doesn't depend on individual post data)
-    const channelConfigs: ChannelConfig[] = subscription.watchers.map((w) => ({
-      channelId: w.channel_id,
-      format: w.format,
-      template:
-        w.template ??
-        getGuildTemplate(serverConfig, w.guild_id) ??
-        (w.format === "inline" ? DEFAULT_INLINE_TEMPLATE : DEFAULT_LINKS_TEMPLATE),
-    }));
+    const reviewChannel = interaction.channel;
+    if (!reviewChannel || !("send" in reviewChannel)) {
+      await interaction.editReply("Cannot send review messages in this channel.");
+      return;
+    }
 
+    const socialsChannelId = monitorsConfig.socials_channel_id;
     let reviewCount = 0;
 
-    for (const igPost of newPosts) {
-      const postData = await buildPostData(igPost, igUsername).catch((err) => {
-        log.error(err, "Failed to build post data for IG post");
-        return null;
-      });
+    for (const postData of newPosts) {
+      if (!postData.postID) continue;
 
-      if (!postData) continue;
-
-      // Name files deterministically
       const fileNames = postData.files.map((f, i) => `media-${i}.${f.ext}`);
+      const renderedContent = buildInlineFormatContent(monitorsConfig.template, postData as any);
 
-      // Pre-render using first watcher's template for modal pre-fill
-      const renderedContent = buildInlineFormatContent(
-        channelConfigs[0]?.template ?? DEFAULT_INLINE_TEMPLATE,
+      const reviewState: ReviewState = {
         postData,
-      );
-
-      const reviewState = {
-        postData,
-        igUsername,
+        connectionId,
         removedIndices: new Set<number>(),
         customContent: null,
         renderedContent,
-        channelConfigs,
+        socialsChannelId,
+        format: monitorsConfig.format,
+        template: monitorsConfig.template,
         fetcherUserId: interaction.user.id,
         fileNames,
       };
-      const reviewId = createReview(reviewState);
 
-      // Build attachment builders with deterministic names
+      const reviewId = createReview(reviewState);
       const attachments = postData.files.map((f, i) =>
         new AttachmentBuilder(f.buffer).setName(fileNames[i]),
       );
 
       try {
-        const reviewMsg = await (reviewChannel as SendableChannels).send(
+        await (reviewChannel as SendableChannels).send(
           buildReviewMessage(reviewState, reviewId, attachments),
         );
-        log.debug({ reviewId, messageId: reviewMsg.id }, "Review message sent");
         reviewCount++;
+        markPostSeen(connectionDb, postData.postID);
       } catch (err) {
         log.error({ err, reviewId }, "Failed to send review message");
         deleteReview(reviewId);
       }
     }
 
-    const member = interaction.member;
-    const displayName =
-      (member instanceof GuildMember ? member.displayName : null) ??
-      interaction.user.displayName ??
-      interaction.user.username;
-
-    upsertLastFetch(db, igUsername, Date.now(), displayName);
-    await updateAllEmbeds(igUsername, subscription, client, db);
+    upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
 
     await interaction.editReply(
-      `Found ${reviewCount} new post${reviewCount === 1 ? "" : "s"}. Review above.`,
+      `Found ${reviewCount} new post${reviewCount === 1 ? "" : "s"}. Review messages created above.`,
     );
   } finally {
-    fetchingInProgress.delete(igUsername);
+    fetchingInProgress.delete(connectionId);
   }
 }

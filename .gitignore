@@ -173,3 +173,13 @@ dist
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Mock data
+mocks/*
+
+# Databases
+data.db
+data.db-wal
+data.db-shm
+connections-db/*
+

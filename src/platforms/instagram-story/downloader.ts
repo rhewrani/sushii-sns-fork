@@ -168,8 +168,10 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
       "Downloading media URLs",
     );
 
-    const postDatas = [];
-    for (const { date, urls } of storiesByDate.values()) {
+    const postDatas: PostData<InstagramMetadata>[] = [];
+    const storyUsername =
+      igStoriesRes.data.additional_data?.user?.username || "Unknown user";
+    for (const [dateKey, { date, urls }] of storiesByDate.entries()) {
       const buffers = await this.downloadImages(urls);
 
       let files: File[] = buffers.map((buf, i) => {
@@ -184,9 +186,8 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
 
       const postData: PostData<InstagramMetadata> = {
         postLink: snsLink,
-        username:
-          igStoriesRes.data.additional_data?.user?.username || "Unknown user",
-        postID: "",
+        username: storyUsername,
+        postID: `instagram-story:${storyUsername}:${dateKey}`,
         originalText: "",
         timestamp: date,
         files,
