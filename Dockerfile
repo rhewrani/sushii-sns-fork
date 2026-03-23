@@ -12,10 +12,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /usr/src/app
 
-COPY ./package.json ./bun.lockb ./
+COPY ./package.json ./bun.lock ./
 
 # Install dependencies
-RUN bun install --frozen-lockfile --production
+RUN bun install --production
 
 COPY . ./
 
