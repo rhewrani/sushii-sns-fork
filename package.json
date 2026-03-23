@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "dayjs": "^1.11.13",
-    "discord.js": "^14.16.3",
+    "discord.js": "^14.25.1",
     "dotenv": "^16.4.7",
     "hono": "^4.6.13",
     "pino": "^9.5.0",
