@@ -389,12 +389,12 @@ async function fetchTwitterFeedRapidApi(
   }
 
   const req = new Request(
-    `https://tiktok-best-experience.p.rapidapi.com/user/${encodeURIComponent(handle)}/feed`,
+    `https://twitter-api45.p.rapidapi.com/timeline.php?screenname=${encodeURIComponent(handle)}`,
     {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
-        "x-rapidapi-host": "tiktok-best-experience.p.rapidapi.com",
+        "x-rapidapi-host": "twitter-api45.p.rapidapi.com",
         "x-rapidapi-key": config.RAPID_API_KEY,
       },
     },
@@ -402,11 +402,11 @@ async function fetchTwitterFeedRapidApi(
 
   const res = await fetch(req);
   if (!res.ok) {
-    throw new Error(`Failed to fetch tiktok feed (${res.status})`);
+    throw new Error(`Failed to fetch twitter feed (${res.status})`);
   }
 
   const json: any = await res.json();
-  return buildTiktokPostDataFromRapidApi(handle, json);
+  return buildTwitterPostDataFromRapidApi(handle, json);
 }
 
 async function buildTwitterPostDataFromRapidApi(
