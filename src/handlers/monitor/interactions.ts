@@ -453,6 +453,10 @@ async function handleReviewPost(
   await interaction.message.edit({
     components: [new TextDisplayBuilder().setContent("✅ Posted")] as any,
   });
+
+  setTimeout(() => {
+    interaction.message.delete().catch(() => {});
+  }, 5000);
 }
 
 async function handleReviewSkip(
@@ -480,6 +484,10 @@ async function handleReviewSkip(
   await interaction.message.edit({
     components: [new TextDisplayBuilder().setContent("⏭️ Skipped")] as any,
   });
+
+  setTimeout(() => {
+    interaction.message.delete().catch(() => {});
+  }, 5000);
 }
 
 // ---------------------------------------------------------------------------

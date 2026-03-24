@@ -1,9 +1,35 @@
 {
-  "panel_channel_id": "",
-  "socials_channel_id": "",
-  "log_channel_id": "",
-  "trigger_role_id": "",
+  "panel_channel_id": "1485627529778958415",
+  "socials_channel_id": "1485627452184068138",
+  "log_channel_id": "1485628023410790490",
+  "trigger_role_id": "1485639060260262059",
   "format": "inline",
   "template": "`{date_kst} {username} SNS Update`\n<{post_url}>\n{caption}",
-  "connections": []
+  "connections": [
+    {
+      "type": "instagram",
+      "handle": "lalalalisa_m",
+      "cooldown_seconds": 0
+    },
+    {
+      "type": "instagram",
+      "handle": "wearelloud",
+      "cooldown_seconds": 0
+    },
+    {
+      "type": "tiktok",
+      "handle": "lalalalisa_m",
+      "cooldown_seconds": 0
+    },
+    {
+      "type": "tiktok",
+      "handle": "wearelloud",
+      "cooldown_seconds": 0
+    },
+    {
+      "type": "twitter",
+      "handle": "wearelloud",
+      "cooldown_seconds": 0
+    }
+  ]
 }

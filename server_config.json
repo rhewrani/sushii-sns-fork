@@ -1,7 +1,7 @@
 {
   "guilds": [
     {
-      "guild_id": "",
+      "guild_id": "1485253226038165725",
       "template": "`{date_kst} {username} SNS Update`\n<{post_url}>\n{caption}"
     }
   ]

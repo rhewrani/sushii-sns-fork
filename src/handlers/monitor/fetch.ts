@@ -318,9 +318,18 @@ async function buildTiktokPostDataFromRapidApi(
     if (mediaUrls.length === 0) continue;
 
     const files = await downloadFilesFromUrls(mediaUrls);
+    
+    // Enforce .mp4 extension for videos since media URL often lacks it
+    if (videoUrls.length > 0 && files.length > 0) {
+      files[0].ext = "mp4";
+    }
     const username = aweme?.author?.unique_id || handle;
-    const postUrl =
+    let postUrl =
       aweme?.share_url || `https://www.tiktok.com/@${username}/video/${awemeId}`;
+
+    if (postUrl.includes("?")) {
+      postUrl = postUrl.substring(0, postUrl.indexOf("?"));
+    }
 
     out.push({
       postLink: {
