@@ -32,6 +32,8 @@ export interface TwitterMetadata extends SnsMetadata {
 
 export interface InstagramMetadata extends SnsMetadata {
   platform: "instagram" | "instagram-story";
+  shortcode?: string;
+  username?: string;
 }
 
 export interface TikTokMetadata extends SnsMetadata {

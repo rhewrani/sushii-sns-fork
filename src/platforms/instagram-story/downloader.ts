@@ -8,6 +8,7 @@ import logger from "../../logger";
 import { chunkArray, formatDiscordTitle, itemsToMessageContents, KST_TIMEZONE, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import { getFileExtFromURL } from "../../utils/http";
 import { convertHeicToJpeg } from "../../utils/heic";
+import { tryWithFallbacks } from "../../utils/fallback";
 import { buildLinksFormatMessages } from "../../utils/template";
 import {
   SnsDownloader,
@@ -36,6 +37,7 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
       url: match[0],
       metadata: {
         platform: "instagram-story",
+        username: match[1],
       },
     };
   }
@@ -53,7 +55,7 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
     );
   }
 
-  async fetchContent(
+  private async fetchContentViaRapidApi(
     snsLink: SnsLink<InstagramMetadata>,
     progressCallback?: ProgressFn,
   ): Promise<PostData<InstagramMetadata>[]> {
@@ -199,6 +201,24 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
     progressCallback?.("Downloaded!", true);
 
     return postDatas;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public fetchContent — tries providers with fallbacks
+  // ---------------------------------------------------------------------------
+
+  async fetchContent(
+    snsLink: SnsLink<InstagramMetadata>,
+    progressCallback?: ProgressFn,
+  ): Promise<PostData<InstagramMetadata>[]> {
+    return tryWithFallbacks([
+      {
+        name: "RapidAPI stories",
+        fn: () => this.fetchContentViaRapidApi(snsLink, progressCallback),
+      },
+      // TODO: Add additional fallback provider here
+      // { name: "Placeholder", fn: () => ... },
+    ]);
   }
 
   // Needs to be separate so we can get the Discord attachment URLs

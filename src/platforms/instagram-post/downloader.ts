@@ -6,6 +6,7 @@ import {
 } from "discord.js";
 import logger from "../../logger";
 import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
+import { tryWithFallbacks } from "../../utils/fallback";
 import { getFileExtFromURL } from "../../utils/http";
 import { convertHeicToJpeg } from "../../utils/heic";
 import { buildLinksFormatMessages } from "../../utils/template";
@@ -24,7 +25,9 @@ import {
   type BdMonitorResponse,
   type BdTriggerResponse,
   InstagramPostListSchema,
+  RapidApiMediaResponseSchema,
   type InstagramPostElement,
+  type RapidApiMediaResponse,
 } from "./types";
 
 const log = logger.child({ module: "InstagramPostDownloader" });
@@ -43,6 +46,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
       url: match[0],
       metadata: {
         platform: "instagram",
+        shortcode: match[2],
       },
     };
   }
@@ -209,7 +213,86 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
     return posts[0];
   }
 
-  async fetchContent(
+  // ---------------------------------------------------------------------------
+  // RapidAPI provider: mediaByShortcode
+  // ---------------------------------------------------------------------------
+
+  private async fetchContentViaRapidApi(
+    snsLink: SnsLink<InstagramMetadata>,
+  ): Promise<PostData<InstagramMetadata>[]> {
+    const shortcode = snsLink.metadata.shortcode;
+    if (!shortcode) {
+      throw new Error("No shortcode available for RapidAPI fetch");
+    }
+
+    const req = new Request(
+      "https://instagram120.p.rapidapi.com/api/instagram/mediaByShortcode",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-rapidapi-host": "instagram120.p.rapidapi.com",
+          "x-rapidapi-key": process.env.RAPID_API_KEY!,
+        },
+        body: JSON.stringify({ shortcode }),
+      },
+    );
+
+    const response = await fetch(req);
+    if (!response.ok) {
+      throw new Error(
+        `RapidAPI mediaByShortcode failed (${response.status})`,
+      );
+    }
+
+    const rawJson = await response.json();
+    const items = RapidApiMediaResponseSchema.parse(rawJson);
+
+    if (items.length === 0) {
+      throw new Error("RapidAPI returned no media items");
+    }
+
+    // All items in the array share the same meta (carousel images)
+    const meta = items[0].meta;
+
+    // Collect all media URLs from every item (carousel support)
+    const mediaUrls = items
+      .flatMap((item) => item.urls.map((u) => u.url))
+      .filter((u) => u.length > 0);
+
+    if (mediaUrls.length === 0) {
+      throw new Error("RapidAPI returned no media URLs");
+    }
+
+    const buffers = await this.downloadImages(mediaUrls);
+    let files = buffers.map((buf, i): File => ({
+      ext: getFileExtFromURL(mediaUrls[i]),
+      buffer: buf,
+    }));
+    files = await convertHeicToJpeg(files);
+
+    return [
+      {
+        postLink: {
+          ...snsLink,
+          url: meta.sourceUrl ?? snsLink.url,
+        },
+        username: meta.username || "Unknown user",
+        postID: meta.shortcode || shortcode,
+        originalText: meta.title || "",
+        timestamp: meta.takenAt
+          ? new Date(meta.takenAt * 1000)
+          : undefined,
+        files,
+      },
+    ];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Brightdata provider (existing trigger/poll/snapshot)
+  // ---------------------------------------------------------------------------
+
+  private async fetchContentViaBrightdata(
     snsLink: SnsLink<InstagramMetadata>,
     progressCallback?: ProgressFn,
   ): Promise<PostData<InstagramMetadata>[]> {
@@ -232,8 +315,6 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
     let triggerResponse: BdTriggerResponse;
     try {
       const rawJson = await response.json();
-
-      // Throws if invalid
       triggerResponse = BdTriggerResponseSchema.parse(rawJson);
     } catch (err) {
       log.error(
@@ -252,22 +333,15 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
       throw new Error("Instagram snapshot ID not found");
     }
 
-    // --------------------------------------------------------------------------
-    // Wait for process trigger and download the data
-
     progressCallback?.("Waiting for IG data...");
     log.debug(
-      {
-        snapshotID: triggerResponse.snapshot_id,
-      },
+      { snapshotID: triggerResponse.snapshot_id },
       "Waiting for IG API to process the post",
     );
     await this.waitUntilDataReady(triggerResponse.snapshot_id);
 
     log.debug(
-      {
-        snapshotID: triggerResponse.snapshot_id,
-      },
+      { snapshotID: triggerResponse.snapshot_id },
       "IG API processed the post, downloading data...",
     );
 
@@ -275,18 +349,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
 
     const igPost = await this.fetchSnapshotData(triggerResponse.snapshot_id);
 
-    log.debug(
-      {
-        response: igPost,
-      },
-      "Downloaded and parsed IG API response",
-    );
-
-    if (!igPost.post_content) {
-      throw new Error("Instagram post content not found");
-    }
-
-    if (igPost.post_content.length === 0) {
+    if (!igPost.post_content || igPost.post_content.length === 0) {
       throw new Error("No Instagram post content found");
     }
 
@@ -294,23 +357,11 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
       .map((m) => m.url)
       .filter((x): x is string => !!x);
 
-    log.debug(
-      {
-        mediaUrls: mediaUrls.length,
-      },
-      "Downloading media URLs",
-    );
-
     const buffers = await this.downloadImages(mediaUrls);
-
-    let files = buffers.map((buf, i): File => {
-      return {
-        ext: getFileExtFromURL(mediaUrls![i]),
-        buffer: buf,
-      };
-    });
-
-    // Check if any heic files, convert to jpg
+    let files = buffers.map((buf, i): File => ({
+      ext: getFileExtFromURL(mediaUrls[i]),
+      buffer: buf,
+    }));
     files = await convertHeicToJpeg(files);
 
     progressCallback?.("Downloaded!", true);
@@ -328,6 +379,28 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
         files,
       },
     ];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public fetchContent — tries providers with fallbacks
+  // ---------------------------------------------------------------------------
+
+  async fetchContent(
+    snsLink: SnsLink<InstagramMetadata>,
+    progressCallback?: ProgressFn,
+  ): Promise<PostData<InstagramMetadata>[]> {
+    return tryWithFallbacks([
+      {
+        name: "RapidAPI mediaByShortcode",
+        fn: () => this.fetchContentViaRapidApi(snsLink),
+      },
+      // TODO: Add additional fallback provider here
+      // { name: "Placeholder", fn: () => ... },
+      {
+        name: "Brightdata",
+        fn: () => this.fetchContentViaBrightdata(snsLink, progressCallback),
+      },
+    ]);
   }
 
   // Needs to be separate so we can get the Discord attachment URLs

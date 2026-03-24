@@ -11,9 +11,12 @@ import logger from "../../logger";
 import { InstagramPostDownloader } from "../../platforms/instagram-post/downloader";
 import {
   BdTriggerResponseSchema,
+  RapidApiMediaResponseSchema,
   type InstagramPostElement,
+  type RapidApiMediaResponse,
 } from "../../platforms/instagram-post/types";
 import type { AnySnsMetadata, InstagramMetadata, PostData } from "../../platforms/base";
+import { tryWithFallbacks } from "../../utils/fallback";
 import { getFileExtFromURL } from "../../utils/http";
 import { convertHeicToJpeg } from "../../utils/heic";
 import { buildInlineFormatContent } from "../../utils/template";
@@ -41,28 +44,209 @@ async function fetchInstagramConnectionPosts(
 ): Promise<PostData<AnySnsMetadata>[]> {
   const [profilePosts, storyPosts] = await Promise.all([
     fetchIgProfilePosts(igUsername),
-    fetchInstagramStoriesRapidApi(igUsername),
+    fetchInstagramStories(igUsername),
   ]);
 
-  const postDatasFromProfile = await Promise.all(
-    profilePosts.map((p) => buildPostData(p, igUsername)),
-  );
-
-  const profileDatas = postDatasFromProfile.filter(
-    (x): x is PostData<InstagramMetadata> => x !== null,
-  );
-
-  return [...profileDatas, ...storyPosts] as PostData<AnySnsMetadata>[];
+  return [...profilePosts, ...storyPosts] as PostData<AnySnsMetadata>[];
 }
+/**
+ * RapidAPI /posts may return a raw array or an object wrapping the array.
+ * This helper extracts and validates the media items array.
+ */
+function parseRapidApiPostsResponse(json: any): RapidApiMediaResponse {
+  // 1. Direct array
+  if (Array.isArray(json)) {
+    return RapidApiMediaResponseSchema.parse(json);
+  }
+
+  // 2. Object wrapper checks
+  let items: any[] | undefined;
+
+  if (Array.isArray(json?.data)) {
+    items = json.data;
+  } else if (Array.isArray(json?.result)) {
+    items = json.result;
+  } else if (Array.isArray(json?.result?.edges)) {
+    // GraphQL shape: unwrap edges -> node
+    items = json.result.edges.map((e: any) => e.node ?? e);
+  } else if (Array.isArray(json?.items)) {
+    items = json.items;
+  }
+
+  if (items) {
+    // If the items are raw data (missing 'urls' key), map them to our format
+    if (items.length > 0 && !items[0].urls) {
+      log.debug(
+        { itemCount: items.length, firstNodeKeys: Object.keys(items[0]) },
+        "Mapping raw IG data to flattened format",
+      );
+      items = items.flatMap((node) => {
+        const shortcode = node.shortcode ?? node.code;
+        if (!shortcode) return [];
+
+        const meta = {
+          title:
+            node.edge_media_to_caption?.edges?.[0]?.node?.text ??
+            node.caption?.text ??
+            "",
+          sourceUrl: `https://www.instagram.com/p/${shortcode}/`,
+          shortcode,
+          username: node.owner?.username ?? node.user?.username,
+          takenAt: node.taken_at_timestamp ?? node.taken_at ?? node.device_timestamp,
+        };
+
+        // Try to find a media URL from various possible field names
+        const findMediaUrl = (obj: any): string | undefined =>
+          obj?.video_url ??
+          obj?.display_url ??
+          obj?.thumbnail_src ??
+          obj?.image_versions2?.candidates?.[0]?.url ??
+          obj?.thumbnail_resources?.[obj.thumbnail_resources.length - 1]?.src;
+
+        // Handle Carousels
+        if (node.edge_sidecar_to_children?.edges) {
+          return node.edge_sidecar_to_children.edges
+            .map((e: any) => {
+              const child = e.node ?? e;
+              const mediaUrl = findMediaUrl(child);
+              if (!mediaUrl) return null;
+              return {
+                urls: [
+                  {
+                    url: mediaUrl,
+                    name: child.is_video ? "MP4" : "JPG",
+                    extension: child.is_video ? "mp4" : "jpg",
+                  },
+                ],
+                meta,
+                pictureUrl: child.display_url ?? child.thumbnail_src ?? mediaUrl,
+              };
+            })
+            .filter(Boolean);
+        }
+
+        // Single photo/video
+        const mediaUrl = findMediaUrl(node);
+        if (!mediaUrl) {
+          log.warn(
+            { shortcode, nodeKeys: Object.keys(node) },
+            "Could not find media URL in node, skipping",
+          );
+          return [];
+        }
+
+        return [
+          {
+            urls: [
+              {
+                url: mediaUrl,
+                name: node.is_video ? "MP4" : "JPG",
+                extension: node.is_video ? "mp4" : "jpg",
+              },
+            ],
+            meta,
+            pictureUrl: node.display_url ?? node.thumbnail_src ?? mediaUrl,
+          },
+        ];
+      });
+    }
+
+    return RapidApiMediaResponseSchema.parse(items);
+  }
+
+  log.error(
+    { responseKeys: Object.keys(json ?? {}) },
+    "Unknown RapidAPI /posts response shape",
+  );
+  throw new Error("RapidAPI /posts returned unexpected response format");
+}
+
+/**
+ * Fetch all posts for an Instagram profile via RapidAPI /posts endpoint.
+ */
+async function fetchIgProfilePostsViaRapidApi(
+  igUsername: string,
+): Promise<PostData<InstagramMetadata>[]> {
+  let items: RapidApiMediaResponse;
+
+  if (!isDevMode()) {
+    const mock = loadMockJson<any>("instagram-post-rapidapi.json");
+    items = parseRapidApiPostsResponse(mock);
+  } else {
+    const req = new Request(
+      "https://instagram120.p.rapidapi.com/api/instagram/posts",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-rapidapi-host": "instagram120.p.rapidapi.com",
+          "x-rapidapi-key": config.RAPID_API_KEY,
+        },
+        body: JSON.stringify({ username: igUsername, maxId: "" }),
+      },
+    );
+
+    const res = await fetch(req);
+    if (!res.ok) {
+      throw new Error(`RapidAPI /posts failed (${res.status})`);
+    }
+
+    const rawJson = await res.json();
+    items = parseRapidApiPostsResponse(rawJson);
+  }
+
+  const postDatas: PostData<InstagramMetadata>[] = [];
+
+  // Group items by shortcode (carousel images share the same shortcode)
+  const byShortcode = new Map<string, typeof items>();
+  for (const item of items) {
+    const sc = item.meta.shortcode ?? "unknown";
+    const existing = byShortcode.get(sc) ?? [];
+    existing.push(item);
+    byShortcode.set(sc, existing);
+  }
+
+  for (const [shortcode, groupItems] of byShortcode) {
+    const meta = groupItems[0].meta;
+    const mediaUrls = groupItems
+      .flatMap((gi) => gi.urls.map((u) => u.url))
+      .filter((u) => u.length > 0);
+
+    if (mediaUrls.length === 0) continue;
+
+    const files = await downloadFilesFromUrls(mediaUrls);
+
+    postDatas.push({
+      postLink: {
+        url: meta.sourceUrl ?? `https://www.instagram.com/p/${shortcode}/`,
+        metadata: { platform: "instagram" as const, shortcode },
+      },
+      username: meta.username || igUsername,
+      postID: shortcode,
+      originalText: meta.title || "",
+      timestamp: meta.takenAt ? new Date(meta.takenAt * 1000) : undefined,
+      files,
+    });
+  }
+
+  return postDatas;
+}
+
 /**
  * Fetch all posts for an Instagram profile via the Brightdata API.
  * Uses the same dataset ID as the post downloader but with a profile URL payload.
  */
-export async function fetchIgProfilePosts(
+async function fetchIgProfilePostsViaBrightdata(
   igUsername: string,
-): Promise<InstagramPostElement[]> {
+): Promise<PostData<InstagramMetadata>[]> {
   if (isDevMode()) {
-    return loadMockJson<InstagramPostElement[]>("instagram-posts.json");
+    const mockPosts = loadMockJson<InstagramPostElement[]>("instagram-posts.json");
+    const postDatas = await Promise.all(
+      mockPosts.map((p) => buildPostData(p, igUsername)),
+    );
+    return postDatas.filter(
+      (x): x is PostData<InstagramMetadata> => x !== null,
+    );
   }
 
   const profileUrl = `https://www.instagram.com/${igUsername}/`;
@@ -96,10 +280,36 @@ export async function fetchIgProfilePosts(
   const snapshotId = triggerParsed.snapshot_id;
 
   log.debug({ igUsername, snapshotId }, "Waiting for IG profile snapshot");
-  // Profile scrapes return multiple posts and take longer than single-post scrapes
   await downloader.waitUntilDataReady(snapshotId, 120_000);
 
-  return downloader.fetchAllSnapshotData(snapshotId);
+  const posts = await downloader.fetchAllSnapshotData(snapshotId);
+  const postDatas = await Promise.all(
+    posts.map((p) => buildPostData(p, igUsername)),
+  );
+  return postDatas.filter(
+    (x): x is PostData<InstagramMetadata> => x !== null,
+  );
+}
+
+/**
+ * Fetch Instagram profile posts with fallbacks.
+ * Primary: RapidAPI /posts, Last fallback: Brightdata.
+ */
+export async function fetchIgProfilePosts(
+  igUsername: string,
+): Promise<PostData<InstagramMetadata>[]> {
+  return tryWithFallbacks([
+    {
+      name: "Brightdata",
+      fn: () => fetchIgProfilePostsViaBrightdata(igUsername),
+    },
+    {
+      name: "RapidAPI /posts",
+      fn: () => fetchIgProfilePostsViaRapidApi(igUsername),
+    }
+    // TODO: Add additional fallback provider here
+    // { name: "Placeholder", fn: () => ... },
+  ]);
 }
 
 /**
@@ -186,7 +396,7 @@ async function downloadFilesFromUrls(urls: string[]) {
   );
 }
 
-async function fetchInstagramStoriesRapidApi(
+async function fetchInstagramStoriesViaRapidApi(
   igUsername: string,
 ): Promise<PostData<AnySnsMetadata>[]> {
   if (isDevMode()) {
@@ -226,6 +436,23 @@ async function fetchInstagramStoriesRapidApi(
   const items: any[] = nestedItems.length > 0 ? nestedItems : resultItems;
 
   return buildStoryPostDataFromRapidApi(igUsername, items);
+}
+
+/**
+ * Fetch Instagram stories with fallbacks.
+ * Primary: RapidAPI stories.
+ */
+async function fetchInstagramStories(
+  igUsername: string,
+): Promise<PostData<AnySnsMetadata>[]> {
+  return tryWithFallbacks([
+    {
+      name: "RapidAPI stories",
+      fn: () => fetchInstagramStoriesViaRapidApi(igUsername),
+    },
+    // TODO: Add additional fallback provider here
+    // { name: "Placeholder", fn: () => ... },
+  ]);
 }
 
 async function buildStoryPostDataFromRapidApi(

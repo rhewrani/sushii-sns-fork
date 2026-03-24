@@ -104,3 +104,33 @@ export type InstagramPostElement = z.infer<typeof InstagramPostElementSchema>;
 
 export const InstagramPostListSchema = z.array(InstagramPostElementSchema);
 export type InstagramPostList = z.infer<typeof InstagramPostListSchema>;
+
+// ---------------------------------------------------------------------------
+// RapidAPI instagram120 types (mediaByShortcode / posts)
+// ---------------------------------------------------------------------------
+
+export const RapidApiMediaUrlSchema = z.object({
+  url: z.string(),
+  name: z.string().optional(),
+  extension: z.string().optional(),
+});
+
+export const RapidApiMetaSchema = z.object({
+  title: z.string().optional(),
+  sourceUrl: z.string().optional(),
+  shortcode: z.string().optional(),
+  username: z.string().optional(),
+  commentCount: z.number().optional(),
+  likeCount: z.number().optional(),
+  takenAt: z.number().optional(),
+});
+
+export const RapidApiMediaItemSchema = z.object({
+  urls: z.array(RapidApiMediaUrlSchema),
+  meta: RapidApiMetaSchema,
+  pictureUrl: z.string().optional(),
+});
+
+export const RapidApiMediaResponseSchema = z.array(RapidApiMediaItemSchema);
+export type RapidApiMediaItem = z.infer<typeof RapidApiMediaItemSchema>;
+export type RapidApiMediaResponse = z.infer<typeof RapidApiMediaResponseSchema>;
