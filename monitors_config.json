@@ -3,7 +3,7 @@
   "socials_channel_id": "1485627452184068138",
   "log_channel_id": "1485628023410790490",
   "trigger_role_id": "1485639060260262059",
-  "format": "inline",
+  "format": "links",
   "template": "`{date_kst} {username} SNS Update`\n<{post_url}>\n{caption}",
   "connections": [
     {

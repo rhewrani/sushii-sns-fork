@@ -36,6 +36,24 @@ const downloader = new InstagramPostDownloader();
 // Guard against concurrent fetches for the same username (double-click race condition)
 const fetchingInProgress = new Set<string>();
 
+async function fetchInstagramConnectionPosts(
+  igUsername: string,
+): Promise<PostData<AnySnsMetadata>[]> {
+  const [profilePosts, storyPosts] = await Promise.all([
+    fetchIgProfilePosts(igUsername),
+    fetchInstagramStoriesRapidApi(igUsername),
+  ]);
+
+  const postDatasFromProfile = await Promise.all(
+    profilePosts.map((p) => buildPostData(p, igUsername)),
+  );
+
+  const profileDatas = postDatasFromProfile.filter(
+    (x): x is PostData<InstagramMetadata> => x !== null,
+  );
+
+  return [...profileDatas, ...storyPosts] as PostData<AnySnsMetadata>[];
+}
 /**
  * Fetch all posts for an Instagram profile via the Brightdata API.
  * Uses the same dataset ID as the post downloader but with a profile URL payload.
@@ -319,7 +337,7 @@ async function buildTiktokPostDataFromRapidApi(
 
     const files = await downloadFilesFromUrls(mediaUrls);
     
-    // Enforce .mp4 extension for videos since media URL often lacks it
+    // enforce mp4 extension for videos since media url often lacks it
     if (videoUrls.length > 0 && files.length > 0) {
       files[0].ext = "mp4";
     }
@@ -347,56 +365,122 @@ async function buildTiktokPostDataFromRapidApi(
   return out;
 }
 
-async function buildTwitterPostDataFromMock(): Promise<PostData<AnySnsMetadata>[]> {
-  const json = loadMockJson<any>("twitter-feed.json");
-  const items: any[] = Array.isArray(json?.data) ? json.data : [];
+function processText(item: any): string {
+  let text = String(item?.text ?? "");
 
-  const out: PostData<AnySnsMetadata>[] = [];
-  for (const item of items) {
-    const postId = String(item?.post_id ?? item?.id ?? "");
-    const username = String(item?.username ?? "unknown");
-    const postUrl = String(item?.post_url ?? "");
-    const mediaUrls: string[] = Array.isArray(item?.media_urls)
-      ? item.media_urls.filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
-      : [];
-
-    if (!postId || !postUrl || mediaUrls.length === 0) continue;
-
-    const files = await downloadFilesFromUrls(mediaUrls);
-    out.push({
-      postLink: {
-        url: postUrl,
-        metadata: { platform: "twitter", username, id: postId },
-      },
-      username,
-      postID: postId,
-      originalText: String(item?.caption ?? item?.text ?? ""),
-      timestamp: item?.timestamp ? new Date(item.timestamp) : undefined,
-      files,
-    });
+  const urls: any[] = item?.entities?.urls ?? [];
+  for (const urlObj of urls) {
+    if (urlObj?.url && urlObj?.expanded_url) {
+      text = text.replace(urlObj.url, urlObj.expanded_url);
+    }
   }
+
+  text = text.replace(/https:\/\/t\.co\/\S+/g, "").trimEnd();
+
+  return text;
+}
+
+async function fetchTwitterFeedRapidApi(
+  handle: string,
+): Promise<PostData<AnySnsMetadata>[]> {
+  if (isDevMode()) {
+    const mock = loadMockJson<any>("twitter-feed.json");
+    return buildTwitterPostDataFromRapidApi(handle, mock);
+  }
+
+  const req = new Request(
+    `https://tiktok-best-experience.p.rapidapi.com/user/${encodeURIComponent(handle)}/feed`,
+    {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "x-rapidapi-host": "tiktok-best-experience.p.rapidapi.com",
+        "x-rapidapi-key": config.RAPID_API_KEY,
+      },
+    },
+  );
+
+  const res = await fetch(req);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch tiktok feed (${res.status})`);
+  }
+
+  const json: any = await res.json();
+  return buildTiktokPostDataFromRapidApi(handle, json);
+}
+
+async function buildTwitterPostDataFromRapidApi(
+  handle: string,
+  json: any,
+): Promise<PostData<AnySnsMetadata>[]> {
+  const items: any[] = Array.isArray(json?.timeline) ? json.timeline : [];
+
+const out: PostData<AnySnsMetadata>[] = [];
+
+for (const item of items) {
+  const postId = String(item?.tweet_id ?? "");
+  const username = String(item?.author?.screen_name ?? "unknown");
+  const postUrl = postId ? `https://x.com/${username}/status/${postId}` : "";
+
+  const rawMedia = item?.media ?? {};
+
+const mediaUrls: string[] = [];
+
+// Handle photos
+if (Array.isArray(rawMedia.photo)) {
+  for (const photo of rawMedia.photo) {
+    const url = photo?.media_url_https ?? photo?.url;
+    if (url) mediaUrls.push(url);
+  }
+}
+
+// Handle videos — pick the highest bitrate variant
+if (Array.isArray(rawMedia.video)) {
+  for (const video of rawMedia.video) {
+    const variants: any[] = video?.variants ?? [];
+    const mp4Variants = variants.filter(
+      (v) => v.content_type === "video/mp4" && v.bitrate != null
+    );
+    const best = mp4Variants.sort((a, b) => b.bitrate - a.bitrate)[0];
+    const url = best?.url ?? variants[0]?.url;
+    if (url) mediaUrls.push(url);
+  }
+}
+
+// Handle animated GIFs if present
+if (Array.isArray(rawMedia.animated_gif)) {
+  for (const gif of rawMedia.animated_gif) {
+    const variants: any[] = gif?.variants ?? [];
+    const url = variants[0]?.url;
+    if (url) mediaUrls.push(url);
+  }
+}
+
+  if (!postId || !postUrl) continue;
+
+  const files = await downloadFilesFromUrls(mediaUrls);
+
+  out.push({
+    postLink: {
+      url: postUrl,
+      metadata: { 
+        platform: "twitter", 
+        username, 
+        id: postId 
+      },
+    },
+    username,
+    postID: postId,
+    originalText: processText(item),
+    timestamp: item?.created_at ? new Date(item.created_at) : undefined,
+    files,
+  });
+}
 
   return out;
 }
 
-async function fetchInstagramConnectionPosts(
-  igUsername: string,
-): Promise<PostData<AnySnsMetadata>[]> {
-  const [profilePosts, storyPosts] = await Promise.all([
-    fetchIgProfilePosts(igUsername),
-    fetchInstagramStoriesRapidApi(igUsername),
-  ]);
 
-  const postDatasFromProfile = await Promise.all(
-    profilePosts.map((p) => buildPostData(p, igUsername)),
-  );
-
-  const profileDatas = postDatasFromProfile.filter(
-    (x): x is PostData<InstagramMetadata> => x !== null,
-  );
-
-  return [...profileDatas, ...storyPosts] as PostData<AnySnsMetadata>[];
-}
 
 export async function fetchConnectionAndCreateReviews(
   interaction: ButtonInteraction,
@@ -443,19 +527,12 @@ export async function fetchConnectionAndCreateReviews(
         return;
       }
     } else if (connection.type === "twitter") {
-      if (isDevMode()) {
-        try {
-          posts = await buildTwitterPostDataFromMock();
-        } catch (err) {
-          log.error({ err }, "Failed to parse twitter mock data");
-          await interaction.editReply("Failed to parse twitter mock data.");
-          return;
-        }
-      } else {
-      log.warn({ connectionId }, "Twitter polling not implemented yet (API endpoints TBD).");
-      await interaction.editReply("Twitter polling not implemented yet.");
-      upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
-      return;
+      try {
+        posts = await fetchTwitterFeedRapidApi(connection.handle);
+      } catch (err) {
+        log.error({ err, handle: connection.handle }, "Failed to fetch Twitter feed");
+        await interaction.editReply("Failed to fetch Twitter feed. Please try again.");
+        return;
       }
     }
 

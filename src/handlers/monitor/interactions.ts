@@ -346,7 +346,7 @@ async function handleReviewPost(
     (_, i) => !state.removedIndices.has(i),
   );
 
-  if (filteredFiles.length === 0) {
+  if (filteredFiles.length === 0 && state.postData.postLink.metadata.platform !== "twitter") {
     await interaction.reply({
       content: "No images selected. Re-add images before posting.",
       ephemeral: true,

@@ -42,11 +42,11 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
 
   buildApiRequest(details: SnsLink<InstagramMetadata>): Request {
     return new Request(
-      `https://instagram-scraper-api2.p.rapidapi.com/v1/stories?username_or_id_or_url=${encodeURIComponent(details.url)}`,
+      `https://instagram120.p.rapidapi.com/v1/stories?username_or_id_or_url=${encodeURIComponent(details.url)}`,
       {
         method: "GET",
         headers: {
-          "x-rapidapi-host": "instagram-scraper-api2.p.rapidapi.com",
+          "x-rapidapi-host": "instagram120.p.rapidapi.com",
           "x-rapidapi-key": process.env.RAPID_API_KEY!,
         },
       },
