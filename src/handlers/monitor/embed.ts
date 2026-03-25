@@ -11,6 +11,7 @@ import {
   StringSelectMenuOptionBuilder,
   TextDisplayBuilder,
   type MessageCreateOptions,
+  type MessageEditOptions
 } from "discord.js";
 import { chunkArray, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import type { LastFetch } from "./db";
@@ -29,6 +30,7 @@ export function buildStatusEmbed(
   cooldownSeconds: number,
   lastFetch: LastFetch | null,
 ): Pick<MessageCreateOptions, "embeds" | "components"> {
+  // ... existing code unchanged ...
   const now = Math.floor(Date.now() / 1000);
 
   let lastFetchedValue: string;
@@ -81,22 +83,13 @@ export function buildStatusEmbed(
 }
 
 export type PanelConnectionMeta = {
-  /**
-   * Internal deterministic ID used in button `customId`.
-   * Example: `instagram:lalalalisa_m`
-   */
   connectionId: string;
-  /**
-   * Human label shown in embed + button.
-   * Example: `instagram/lalalalisa_m`
-   */
   label: string;
   cooldownSeconds: number;
   lastFetch: LastFetch | null;
 };
 
 function typeToEmoji(connectionId: string): string {
-  // connectionId is `${type}:${handle}`
   if (connectionId.startsWith("instagram:")) return "📸";
   if (connectionId.startsWith("tiktok:")) return "🎵";
   if (connectionId.startsWith("twitter:")) return "🐦";
@@ -104,16 +97,12 @@ function typeToEmoji(connectionId: string): string {
 }
 
 function typeToButtonStyle(connectionId: string): ButtonStyle {
-  // Discord only has a few button colors; map each platform to a distinct one.
   if (connectionId.startsWith("instagram:")) return ButtonStyle.Primary;
   if (connectionId.startsWith("tiktok:")) return ButtonStyle.Success;
   if (connectionId.startsWith("twitter:")) return ButtonStyle.Secondary;
   return ButtonStyle.Danger;
 }
 
-/**
- * Build the single “panel” embed with one poll button per connection.
- */
 export function buildPanelEmbed(
   connections: PanelConnectionMeta[],
 ): Pick<MessageCreateOptions, "embeds" | "components"> {
@@ -174,53 +163,150 @@ export function buildPanelEmbed(
 // Components V2 review message builders
 // ---------------------------------------------------------------------------
 
-// discord.js types don't fully model Components V2 top-level components yet;
-// use a typed union internally and cast at the discord.js API boundary.
 type ReviewComponent =
   | TextDisplayBuilder
   | MediaGalleryBuilder
   | ActionRowBuilder<StringSelectMenuBuilder>
   | ActionRowBuilder<ButtonBuilder>;
 
-export function buildReviewComponents(
+/**
+ * Represents one message batch in a multi-message review.
+ */
+export interface ReviewMessageBatch {
+  files: AttachmentBuilder[];
+  components: ReviewComponent[];
+  isLast: boolean;
+}
+
+/**
+ * Build all message batches for a review.
+ * - First N-1 messages: Just images with simple headers
+ * - Last message: Images + dropdown (all images) + action buttons
+ */
+export function buildReviewBatches(
   state: ReviewState,
   reviewId: string,
-): ReviewComponent[] {
-  const components: ReviewComponent[] = [];
+): ReviewMessageBatch[] {
+  const batches: ReviewMessageBatch[] = [];
+  // FIX: Get files from postData, not state directly
+  const files = state.postData.files;
+  const fileChunks = chunkArray(files, MAX_ATTACHMENTS_PER_MESSAGE);
+  const allFileNames = state.fileNames;
 
-  // Text header
-  const headerText = state.customContent ?? state.renderedContent;
-  components.push(new TextDisplayBuilder().setContent(headerText));
+  for (let i = 0; i < fileChunks.length; i++) {
+    const chunk = fileChunks[i];
+    const startIdx = i * MAX_ATTACHMENTS_PER_MESSAGE;
+    const isLast = i === fileChunks.length - 1;
+    
+    const batchFileNames = chunk.map((_, idx) => allFileNames[startIdx + idx]);
+    const batchAttachments = chunk.map((f, idx) => 
+      new AttachmentBuilder(f.buffer).setName(batchFileNames[idx])
+    );
 
-  // MediaGallery — only files attached to THIS message (first chunk, max 10).
-  // Overflow images are in separate messages above and can't be referenced here.
-  const galleryNames = state.fileNames.slice(0, MAX_ATTACHMENTS_PER_MESSAGE);
-  if (galleryNames.length > 0) {
-    const gallery = new MediaGalleryBuilder();
-    for (let i = 0; i < galleryNames.length; i++) {
-      const item = new MediaGalleryItemBuilder()
-        .setURL(`attachment://${galleryNames[i]}`)
-        .setSpoiler(state.removedIndices.has(i));
-      gallery.addItems(item);
+    if (isLast) {
+      // Last message: full controls
+      const components = buildControlComponents(state, reviewId, startIdx);
+      batches.push({ files: batchAttachments, components, isLast: true });
+    } else {
+      // Earlier messages: simple header + gallery only
+      const components = buildSimpleComponents(state, i, startIdx);
+      batches.push({ files: batchAttachments, components, isLast: false });
     }
-    components.push(gallery);
   }
 
-  // Select menu lists ALL files (including overflow) so moderator can remove any
-  if (state.fileNames.length > 1) {
-    const options = state.fileNames.map((name, i) => {
+  return batches;
+}
+
+/**
+ * Build components for non-last messages (images only, no controls).
+ */
+function buildSimpleComponents(
+  state: ReviewState,
+  chunkIndex: number,
+  startIdx: number,
+): ReviewComponent[] {
+  const components: ReviewComponent[] = [];
+  const allFileNames = state.fileNames;
+  
+  // Header text (only on first chunk)
+  if (chunkIndex === 0) {
+    const headerText = state.customContent ?? state.renderedContent;
+    components.push(new TextDisplayBuilder().setContent(headerText));
+  } else {
+    const endIdx = Math.min(startIdx + MAX_ATTACHMENTS_PER_MESSAGE, allFileNames.length);
+    components.push(
+      new TextDisplayBuilder().setContent(
+        `📎 Images ${startIdx + 1}–${endIdx}`
+      )
+    );
+  }
+  
+  // Media gallery for this chunk only
+  const gallery = new MediaGalleryBuilder();
+  for (let i = 0; i < MAX_ATTACHMENTS_PER_MESSAGE; i++) {
+    const globalIdx = startIdx + i;
+    if (globalIdx >= allFileNames.length) break;
+    
+    const item = new MediaGalleryItemBuilder()
+      .setURL(`attachment://${allFileNames[globalIdx]}`)
+      .setSpoiler(state.removedIndices.has(globalIdx));
+    gallery.addItems(item);
+  }
+  components.push(gallery);
+  
+  return components;
+}
+
+
+/**
+ * Build components for the last message (controls + dropdown for ALL images).
+ * Only shows header if it's the only batch (startIdx === 0).
+ */
+function buildControlComponents(
+  state: ReviewState,
+  reviewId: string,
+  startIdx: number,
+): ReviewComponent[] {
+  const components: ReviewComponent[] = [];
+  const allFileNames = state.fileNames;
+
+  // Only show header if this is the first batch (no previous batches)
+  // If startIdx > 0, the header was already shown in the first batch
+  if (startIdx === 0) {
+    const headerText = state.customContent ?? state.renderedContent;
+    components.push(new TextDisplayBuilder().setContent(headerText));
+  }
+
+  // Media gallery for this last chunk
+  const gallery = new MediaGalleryBuilder();
+  for (let i = startIdx; i < allFileNames.length; i++) {
+    const item = new MediaGalleryItemBuilder()
+      .setURL(`attachment://${allFileNames[i]}`)
+      .setSpoiler(state.removedIndices.has(i));
+    gallery.addItems(item);
+  }
+  components.push(gallery);
+
+  // Select menu for ALL images (including those in previous messages)
+  if (allFileNames.length > 1) {
+    const options = allFileNames.map((name, i) => {
       const ext = name.split(".").pop()?.toUpperCase() ?? "FILE";
+      const chunkNum = Math.floor(i / MAX_ATTACHMENTS_PER_MESSAGE) + 1;
+      const label = chunkNum > 1 
+        ? `Image ${i + 1} (${ext}) — batch ${chunkNum}`
+        : `Image ${i + 1} (${ext})`;
+      
       return new StringSelectMenuOptionBuilder()
-        .setLabel(`Image ${i + 1} (${ext})`)
+        .setLabel(label)
         .setValue(String(i))
         .setDefault(state.removedIndices.has(i));
     });
 
     const selectMenu = new StringSelectMenuBuilder()
       .setCustomId(`${REVIEW_REMOVE_PREFIX}${reviewId}`)
-      .setPlaceholder("Select images to remove (click again to undo)...")
+      .setPlaceholder(`Select images to remove from all ${allFileNames.length} images...`)
       .setMinValues(0)
-      .setMaxValues(state.fileNames.length)
+      .setMaxValues(allFileNames.length)
       .addOptions(options);
 
     components.push(
@@ -228,7 +314,7 @@ export function buildReviewComponents(
     );
   }
 
-  // Action buttons
+  // Action buttons (Edit, Post, Skip)
   const editButton = new ButtonBuilder()
     .setCustomId(`${REVIEW_EDIT_PREFIX}${reviewId}`)
     .setLabel("Edit Text")
@@ -259,16 +345,45 @@ export function buildReviewComponents(
 }
 
 /**
- * Build the full message options for a Components V2 review message.
+ * Convert batches to MessageCreateOptions for sending.
+ */
+export function batchToMessageOptions(
+  batch: ReviewMessageBatch,
+): MessageCreateOptions {
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    files: batch.files,
+    components: batch.components as MessageCreateOptions["components"],
+  };
+}
+
+/**
+ * @deprecated Use buildReviewBatches instead for multi-image support.
+ * Kept for backwards compatibility with single-message reviews.
  */
 export function buildReviewMessage(
   state: ReviewState,
   reviewId: string,
   files: AttachmentBuilder[],
 ): MessageCreateOptions {
+  // Fallback: build batches normally - buildReviewBatches reads from state.postData.files
+  const batches = buildReviewBatches(state, reviewId);
+  const lastBatch = batches[batches.length - 1];
+  return batchToMessageOptions(lastBatch);
+}
+
+/**
+ * Convert batches to MessageEditOptions for updating existing messages.
+ * MessageEditOptions has stricter flag types than MessageCreateOptions.
+ */
+export function batchToEditOptions(
+  batch: ReviewMessageBatch,
+): MessageEditOptions {
+  // Cast through unknown to handle the flag type incompatibility
+  // The actual runtime values are the same, just TypeScript being strict
   return {
     flags: MessageFlags.IsComponentsV2,
-    files,
-    components: buildReviewComponents(state, reviewId) as MessageCreateOptions["components"],
-  };
+    components: batch.components as any,
+    // Note: files cannot be changed in edit, so we don't include them
+  } as MessageEditOptions;
 }

@@ -15,22 +15,17 @@ export const REVIEW_SKIP_PREFIX = "monitor:review:skip:";
 
 export interface ReviewState {
   postData: PostData<AnySnsMetadata>;
-  /**
-   * Internal deterministic ID used by poll buttons + dedupe per connection.
-   * Example: `instagram:lalalalisa_m`
-   */
   connectionId: string;
   removedIndices: Set<number>;
   customContent: string | null;
   renderedContent: string;
   socialsChannelId: string;
-  format: "inline" | "links";
+  format: string;
   template: string;
   fetcherUserId: string;
   fileNames: string[];
-  overflowMessageIds: string[];
+  messageIds: string[]; // NEW
 }
-
 const REVIEW_TTL_MS = 60 * 60 * 1000; // 1 hour — prevents file buffer leaks on abandoned reviews
 
 const pendingReviews = new Map<string, ReviewState>();

@@ -30,7 +30,7 @@ import {
   markPostSeen,
   upsertConnectionMeta,
 } from "./db";
-import { buildReviewMessage } from "./embed";
+import { batchToMessageOptions, buildReviewBatches } from "./embed";
 import { createReview, deleteReview, type ReviewState } from "./review";
 
 const log = logger.child({ module: "monitor/fetch" });
@@ -463,8 +463,6 @@ export async function fetchIgProfilePosts(
       name: "Brightdata /posts",
       fn: () => fetchIgProfilePostsViaBrightdata(igUsername),
     },
-    // TODO: Add a profile-capable provider as a fallback here
-    // { name: "Placeholder", fn: () => ... },
   ]);
 }
 
@@ -986,43 +984,25 @@ export async function fetchConnectionAndCreateReviews(
         template: monitorsConfig.template,
         fetcherUserId: interaction.user.id,
         fileNames: allFileNames,
-        overflowMessageIds: [],
+        messageIds: [],
       };
 
       const reviewId = createReview(reviewState);
 
       try {
-        // Send the review embed FIRST — it has the text, gallery (images 1-10),
-        // dropdown (all images), and action buttons.
-        const firstChunk = fileChunks[0] ?? [];
-        const firstAttachments = firstChunk.map((f, i) =>
-          new AttachmentBuilder(f.buffer).setName(allFileNames[i]),
-        );
-        await (reviewChannel as SendableChannels).send(
-          buildReviewMessage(reviewState, reviewId, firstAttachments),
-        );
+        // Build all message batches (images first, controls last)
+        const batches = buildReviewBatches(reviewState, reviewId);
+        const messageIds: string[] = [];
 
-        // Send overflow chunks AFTER the review embed, labelled so it's clear
-        // which post they belong to.
-        const overflowMessageIds: string[] = [];
-        for (let chunkIndex = 1; chunkIndex < fileChunks.length; chunkIndex++) {
-          const chunk = fileChunks[chunkIndex];
-          const startIndex = chunkIndex * MAX_ATTACHMENTS_PER_MESSAGE + 1;
-          const endIndex = startIndex + chunk.length - 1;
-          const attachments = chunk.map((f, i) =>
-            new AttachmentBuilder(f.buffer).setName(
-              allFileNames[chunkIndex * MAX_ATTACHMENTS_PER_MESSAGE + i],
-            ),
+        for (const batch of batches) {
+          const msg = await (reviewChannel as SendableChannels).send(
+            batchToMessageOptions(batch)
           );
-          const overflowMsg = await (reviewChannel as SendableChannels).send({
-            content: `📎 **Images ${startIndex}–${endIndex}** (continued from review above)`,
-            files: attachments,
-          });
-          overflowMessageIds.push(overflowMsg.id);
+          messageIds.push(msg.id);
         }
 
-        // Store overflow IDs so post/skip handlers can delete them
-        reviewState.overflowMessageIds.push(...overflowMessageIds);
+        // Store all message IDs so handlers can delete/update them
+        reviewState.messageIds = messageIds;
 
         reviewCount++;
         // markPostSeen is now called upfront in the fetch layer for all unseen posts,
@@ -1037,7 +1017,7 @@ export async function fetchConnectionAndCreateReviews(
     upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
 
     await interaction.editReply(
-      `Found ${reviewCount} new post${reviewCount === 1 ? "" : "s"}. Review messages created above.`,
+      `Found ${reviewCount} new post${reviewCount === 1 ? "" : "s"}. Review messages created below.`,
     );
   } finally {
     fetchingInProgress.delete(connectionId);
