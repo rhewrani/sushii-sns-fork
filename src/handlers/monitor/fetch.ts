@@ -626,20 +626,20 @@ async function buildStoryPostDataFromRapidApi(
 
     const candidateUrls: string[] = Array.isArray(item?.candidates)
       ? item.candidates
-          .map((c: any) => c?.url)
-          .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+        .map((c: any) => c?.url)
+        .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
       : [];
 
     const imageVersionCandidateUrls: string[] = Array.isArray(item?.image_versions2?.candidates)
       ? item.image_versions2.candidates
-          .map((c: any) => c?.url)
-          .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+        .map((c: any) => c?.url)
+        .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
       : [];
 
     const videoUrls: string[] = Array.isArray(item?.video_versions)
       ? item.video_versions
-          .map((v: any) => v?.url)
-          .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+        .map((v: any) => v?.url)
+        .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
       : [];
 
     const mediaUrls = [...videoUrls, ...candidateUrls, ...imageVersionCandidateUrls];
@@ -708,23 +708,23 @@ async function buildTiktokPostDataFromRapidApi(
 
     const videoUrls: string[] = Array.isArray(aweme?.video?.play_addr?.url_list)
       ? aweme.video.play_addr.url_list.filter(
-          (u: unknown): u is string => typeof u === "string" && u.length > 0,
-        )
+        (u: unknown): u is string => typeof u === "string" && u.length > 0,
+      )
       : [];
 
     const imageUrls: string[] = Array.isArray(aweme?.image_post_info?.images)
       ? aweme.image_post_info.images
-          .flatMap((img: any) =>
-            Array.isArray(img?.display_image?.url_list) ? img.display_image.url_list : [],
-          )
-          .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+        .flatMap((img: any) =>
+          Array.isArray(img?.display_image?.url_list) ? img.display_image.url_list : [],
+        )
+        .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
       : [];
 
     const mediaUrls = videoUrls.length > 0 ? [videoUrls[0]] : imageUrls;
     if (mediaUrls.length === 0) continue;
 
     const files = await downloadFilesFromUrls(mediaUrls);
-    
+
     // enforce mp4 extension for videos since media url often lacks it
     if (videoUrls.length > 0 && files.length > 0) {
       files[0].ext = "mp4";
@@ -803,67 +803,67 @@ async function buildTwitterPostDataFromRapidApi(
 ): Promise<PostData<AnySnsMetadata>[]> {
   const items: any[] = Array.isArray(json?.timeline) ? json.timeline : [];
 
-const out: PostData<AnySnsMetadata>[] = [];
+  const out: PostData<AnySnsMetadata>[] = [];
 
-for (const item of items) {
-  const postId = String(item?.tweet_id ?? "");
-  const username = String(item?.author?.screen_name ?? "unknown");
-  const postUrl = postId ? `https://x.com/${username}/status/${postId}` : "";
+  for (const item of items) {
+    const postId = String(item?.tweet_id ?? "");
+    const username = String(item?.author?.screen_name ?? "unknown");
+    const postUrl = postId ? `https://x.com/${username}/status/${postId}` : "";
 
-  const rawMedia = item?.media ?? {};
+    const rawMedia = item?.media ?? {};
 
-const mediaUrls: string[] = [];
+    const mediaUrls: string[] = [];
 
-// Handle photos
-if (Array.isArray(rawMedia.photo)) {
-  for (const photo of rawMedia.photo) {
-    const url = photo?.media_url_https ?? photo?.url;
-    if (url) mediaUrls.push(url);
-  }
-}
+    // Handle photos
+    if (Array.isArray(rawMedia.photo)) {
+      for (const photo of rawMedia.photo) {
+        const url = photo?.media_url_https ?? photo?.url;
+        if (url) mediaUrls.push(url);
+      }
+    }
 
-// Handle videos — pick the highest bitrate variant
-if (Array.isArray(rawMedia.video)) {
-  for (const video of rawMedia.video) {
-    const variants: any[] = video?.variants ?? [];
-    const mp4Variants = variants.filter(
-      (v) => v.content_type === "video/mp4" && v.bitrate != null
-    );
-    const best = mp4Variants.sort((a, b) => b.bitrate - a.bitrate)[0];
-    const url = best?.url ?? variants[0]?.url;
-    if (url) mediaUrls.push(url);
-  }
-}
+    // Handle videos — pick the highest bitrate variant
+    if (Array.isArray(rawMedia.video)) {
+      for (const video of rawMedia.video) {
+        const variants: any[] = video?.variants ?? [];
+        const mp4Variants = variants.filter(
+          (v) => v.content_type === "video/mp4" && v.bitrate != null
+        );
+        const best = mp4Variants.sort((a, b) => b.bitrate - a.bitrate)[0];
+        const url = best?.url ?? variants[0]?.url;
+        if (url) mediaUrls.push(url);
+      }
+    }
 
-// Handle animated GIFs if present
-if (Array.isArray(rawMedia.animated_gif)) {
-  for (const gif of rawMedia.animated_gif) {
-    const variants: any[] = gif?.variants ?? [];
-    const url = variants[0]?.url;
-    if (url) mediaUrls.push(url);
-  }
-}
+    // Handle animated GIFs if present
+    if (Array.isArray(rawMedia.animated_gif)) {
+      for (const gif of rawMedia.animated_gif) {
+        const variants: any[] = gif?.variants ?? [];
+        const url = variants[0]?.url;
+        if (url) mediaUrls.push(url);
+      }
+    }
 
-  if (!postId || !postUrl) continue;
+    if (!postId || !postUrl) continue;
 
-  const files = await downloadFilesFromUrls(mediaUrls);
+    const files = await downloadFilesFromUrls(mediaUrls);
 
-  out.push({
-    postLink: {
-      url: postUrl,
-      metadata: { 
-        platform: "twitter", 
-        username, 
-        id: postId 
+    out.push({
+      postLink: {
+        url: postUrl,
+        metadata: {
+          platform: "twitter",
+          username,
+          id: postId
+        },
       },
-    },
-    username,
-    postID: postId,
-    originalText: processText(item),
-    timestamp: item?.created_at ? new Date(item.created_at) : undefined,
-    files,
-  });
-}
+      username,
+      postID: postId,
+      originalText: processText(item),
+      timestamp: item?.created_at ? new Date(item.created_at) : undefined,
+      files,
+    });
+  }
 
   return out;
 }
@@ -934,10 +934,19 @@ export async function fetchConnectionAndCreateReviews(
     // by the fetch layer (which also skips downloading media for posts beyond the limit).
     // For non-Instagram platforms (tiktok/twitter) which don't support the options yet,
     // filter unseen here as a fallback.
-    const newPosts = posts.filter((p) => {
-      if (!p.postID) return false;
-      return !isPostSeen(connectionDb, p.postID);
-    });
+
+    let newPosts: PostData<AnySnsMetadata>[];
+    if (connection.type === "instagram") {
+      // Instagram fetch already filtered to unseen AND limited to MAX_REVIEWS_PER_POLL
+      // It also marked ALL fetched posts as seen
+      newPosts = posts;
+    } else {
+      // TikTok/Twitter don't have the seen-check in their fetch yet
+      newPosts = posts.filter((p) => {
+        if (!p.postID) return false;
+        return !isPostSeen(connectionDb, p.postID);
+      });
+    }
 
     if (newPosts.length === 0) {
       upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
