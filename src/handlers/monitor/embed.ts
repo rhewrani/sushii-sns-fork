@@ -188,26 +188,25 @@ export function buildReviewComponents(
 ): ReviewComponent[] {
   const components: ReviewComponent[] = [];
 
-  // TextDisplay header
+  // Text header
   const headerText = state.customContent ?? state.renderedContent;
   components.push(new TextDisplayBuilder().setContent(headerText));
 
-  // MediaGallery blocks — same cap as attachment messages
-  for (let start = 0; start < state.fileNames.length; start += MAX_ATTACHMENTS_PER_MESSAGE) {
+  // MediaGallery — only files attached to THIS message (first chunk, max 10).
+  // Overflow images are in separate messages above and can't be referenced here.
+  const galleryNames = state.fileNames.slice(0, MAX_ATTACHMENTS_PER_MESSAGE);
+  if (galleryNames.length > 0) {
     const gallery = new MediaGalleryBuilder();
-    const end = Math.min(start + MAX_ATTACHMENTS_PER_MESSAGE, state.fileNames.length);
-
-    for (let i = start; i < end; i++) {
+    for (let i = 0; i < galleryNames.length; i++) {
       const item = new MediaGalleryItemBuilder()
-        .setURL(`attachment://${state.fileNames[i]}`)
+        .setURL(`attachment://${galleryNames[i]}`)
         .setSpoiler(state.removedIndices.has(i));
       gallery.addItems(item);
     }
-
     components.push(gallery);
   }
 
-  // Select menu to remove images (only if >1 file)
+  // Select menu lists ALL files (including overflow) so moderator can remove any
   if (state.fileNames.length > 1) {
     const options = state.fileNames.map((name, i) => {
       const ext = name.split(".").pop()?.toUpperCase() ?? "FILE";

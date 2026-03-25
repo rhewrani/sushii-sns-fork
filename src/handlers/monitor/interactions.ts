@@ -368,7 +368,6 @@ async function handleReviewPost(
     const sendable = channel as SendableChannels;
 
     if (state.customContent !== null) {
-      // Custom content overrides the template.
       if (state.format === "inline") {
         const attachments = filteredFiles.map((f, i) =>
           new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
@@ -376,23 +375,25 @@ async function handleReviewPost(
         const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
 
         if (chunks.length === 0) {
-          // If no files (e.g., text-only Twitter post), send content directly.
           await sendable.send({
             content: state.customContent ?? undefined,
             flags: MessageFlags.SuppressEmbeds,
           });
         } else {
-          for (let i = 0; i < chunks.length; i++) {
+          // Send text first, then media chunks
+          await sendable.send({
+            content: state.customContent,
+            flags: MessageFlags.SuppressEmbeds,
+          });
+          for (const chunk of chunks) {
             await sendable.send({
-              content: i === 0 ? state.customContent : undefined,
-              files: chunks[i],
+              files: chunk,
               flags: MessageFlags.SuppressEmbeds,
             });
           }
         }
       } else {
-        // links format: upload attachments first to get CDN URLs, then combine
-        // custom text + CDN URLs into message(s).
+        // links format: upload attachments first to get CDN URLs, then send text + URLs
         const attachmentMsgs = chunkArray(
           filteredFiles.map((f, i) =>
             new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
@@ -419,22 +420,25 @@ async function handleReviewPost(
       const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
 
       if (chunks.length === 0) {
-        // If no files, send rendered template text.
         await sendable.send({
           content: content,
           flags: MessageFlags.SuppressEmbeds,
         });
       } else {
-        for (let i = 0; i < chunks.length; i++) {
+        // Send text first, then media chunks
+        await sendable.send({
+          content,
+          flags: MessageFlags.SuppressEmbeds,
+        });
+        for (const chunk of chunks) {
           await sendable.send({
-            content: i === 0 ? content : undefined,
-            files: chunks[i],
+            files: chunk,
             flags: MessageFlags.SuppressEmbeds,
           });
         }
       }
     } else {
-      // links format
+      // links format: upload files first to get CDN URLs, then send text + URLs
       const attachments = filteredFiles.map((f, i) =>
         new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
       );
@@ -467,6 +471,15 @@ async function handleReviewPost(
   }
 
   deleteReview(reviewId);
+
+  // Delete overflow chunk messages (carousel images sent before the review embed)
+  for (const msgId of state.overflowMessageIds ?? []) {
+    try {
+      await interaction.message.channel.messages.delete(msgId);
+    } catch (err) {
+      log.warn({ err, msgId }, "Failed to delete overflow review message");
+    }
+  }
 
   await interaction.message.edit({
     components: [new TextDisplayBuilder().setContent("✅ Posted")] as any,

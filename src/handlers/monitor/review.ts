@@ -28,6 +28,7 @@ export interface ReviewState {
   template: string;
   fetcherUserId: string;
   fileNames: string[];
+  overflowMessageIds: string[];
 }
 
 const REVIEW_TTL_MS = 60 * 60 * 1000; // 1 hour — prevents file buffer leaks on abandoned reviews

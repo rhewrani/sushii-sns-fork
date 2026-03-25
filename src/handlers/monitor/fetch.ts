@@ -42,7 +42,11 @@ const fetchingInProgress = new Set<string>();
 
 async function fetchInstagramConnectionPosts(
   igUsername: string,
-  options?: { isPostSeen?: (id: string) => boolean; limit?: number },
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
 ): Promise<PostData<AnySnsMetadata>[]> {
   const [profilePosts, storyPosts] = await Promise.all([
     fetchIgProfilePosts(igUsername, options),
@@ -233,7 +237,11 @@ async function fetchCarouselViaMediaByShortcode(shortcode: string): Promise<Rapi
  */
 async function fetchIgProfilePostsViaRapidApi(
   igUsername: string,
-  options?: { isPostSeen?: (id: string) => boolean; limit?: number },
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
 ): Promise<PostData<InstagramMetadata>[]> {
   let feedNodes: NormalizedFeedNode[];
 
@@ -263,18 +271,27 @@ async function fetchIgProfilePostsViaRapidApi(
     feedNodes = parseRapidApiPostsResponse(rawJson);
   }
 
-  const postDatas: PostData<InstagramMetadata>[] = [];
   const limit = options?.limit ?? Infinity;
   const seenChecker = options?.isPostSeen;
+  const markSeen = options?.markPostSeen;
 
-  for (const node of feedNodes) {
-    // Stop downloading once we've hit the limit — no wasted fetches
-    if (postDatas.length >= limit) break;
+  // Separate unseen nodes from seen ones upfront — no downloading yet.
+  const unseenNodes = feedNodes.filter((n) => !seenChecker?.(n.shortcode));
 
+  // Mark ALL unseen nodes as seen immediately so future polls skip them,
+  // even if we only download the first `limit` ones below.
+  if (markSeen) {
+    for (const node of unseenNodes) {
+      markSeen(node.shortcode);
+    }
+  }
+
+  // Only download media for the first `limit` unseen posts.
+  const nodesToDownload = unseenNodes.slice(0, limit);
+  const postDatas: PostData<InstagramMetadata>[] = [];
+
+  for (const node of nodesToDownload) {
     const { shortcode, meta } = node;
-
-    // Skip already-seen posts without downloading anything
-    if (seenChecker?.(shortcode)) continue;
 
     const postUrl = meta.sourceUrl ?? `https://www.instagram.com/p/${shortcode}/`;
 
@@ -431,12 +448,20 @@ async function fetchIgProfilePostsViaBrightdata(
  */
 export async function fetchIgProfilePosts(
   igUsername: string,
-  options?: { isPostSeen?: (id: string) => boolean; limit?: number },
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
 ): Promise<PostData<InstagramMetadata>[]> {
   return tryWithFallbacks([
     {
       name: "RapidAPI /posts",
       fn: () => fetchIgProfilePostsViaRapidApi(igUsername, options),
+    },
+    {
+      name: "Brightdata /posts",
+      fn: () => fetchIgProfilePostsViaBrightdata(igUsername),
     },
     // TODO: Add a profile-capable provider as a fallback here
     // { name: "Placeholder", fn: () => ... },
@@ -879,6 +904,7 @@ export async function fetchConnectionAndCreateReviews(
       try {
         posts = await fetchInstagramConnectionPosts(connection.handle, {
           isPostSeen: (id) => isPostSeen(connectionDb, id),
+          markPostSeen: (id) => markPostSeen(connectionDb, id),
           limit: MAX_REVIEWS_PER_POLL,
         });
       } catch (err) {
@@ -933,15 +959,12 @@ export async function fetchConnectionAndCreateReviews(
     for (const postData of postsToReview) {
       if (!postData.postID) continue;
 
-      // Split files into chunks of 10 (Discord's attachment limit per message).
-      // The ReviewState only references files in the FIRST chunk — subsequent chunks
-      // are sent as plain follow-up messages with no embed references, so Discord
-      // never sees an attachment:// URL it can't resolve.
-      const fileChunks = chunkArray(postData.files, MAX_ATTACHMENTS_PER_MESSAGE);
-      const firstChunk = fileChunks[0] ?? [];
-
-      const fileNames = firstChunk.map((f, i) => `media-${i}.${f.ext}`);
+      // All filenames across all chunks — used for the dropdown (covers every image).
+      const allFileNames = postData.files.map((f, i) => `media-${i}.${f.ext}`);
       const renderedContent = buildInlineFormatContent(monitorsConfig.template, postData as any);
+
+      // Split into chunks of 10 for Discord's per-message attachment limit.
+      const fileChunks = chunkArray(postData.files, MAX_ATTACHMENTS_PER_MESSAGE);
 
       const reviewState: ReviewState = {
         postData,
@@ -953,31 +976,49 @@ export async function fetchConnectionAndCreateReviews(
         format: monitorsConfig.format,
         template: monitorsConfig.template,
         fetcherUserId: interaction.user.id,
-        fileNames,
+        fileNames: allFileNames,
+        overflowMessageIds: [],
       };
 
       const reviewId = createReview(reviewState);
 
       try {
-        // First chunk: send with the review embed and action buttons
+        // Send the review embed FIRST — it has the text, gallery (images 1-10),
+        // dropdown (all images), and action buttons.
+        const firstChunk = fileChunks[0] ?? [];
         const firstAttachments = firstChunk.map((f, i) =>
-          new AttachmentBuilder(f.buffer).setName(fileNames[i]),
+          new AttachmentBuilder(f.buffer).setName(allFileNames[i]),
         );
         await (reviewChannel as SendableChannels).send(
           buildReviewMessage(reviewState, reviewId, firstAttachments),
         );
 
-        // Remaining chunks: plain attachment messages, no embed references
+        // Send overflow chunks AFTER the review embed, labelled so it's clear
+        // which post they belong to.
+        const overflowMessageIds: string[] = [];
         for (let chunkIndex = 1; chunkIndex < fileChunks.length; chunkIndex++) {
           const chunk = fileChunks[chunkIndex];
+          const startIndex = chunkIndex * MAX_ATTACHMENTS_PER_MESSAGE + 1;
+          const endIndex = startIndex + chunk.length - 1;
           const attachments = chunk.map((f, i) =>
-            new AttachmentBuilder(f.buffer).setName(`media-${chunkIndex * MAX_ATTACHMENTS_PER_MESSAGE + i}.${f.ext}`),
+            new AttachmentBuilder(f.buffer).setName(
+              allFileNames[chunkIndex * MAX_ATTACHMENTS_PER_MESSAGE + i],
+            ),
           );
-          await (reviewChannel as SendableChannels).send({ files: attachments });
+          const overflowMsg = await (reviewChannel as SendableChannels).send({
+            content: `📎 **Images ${startIndex}–${endIndex}** (continued from review above)`,
+            files: attachments,
+          });
+          overflowMessageIds.push(overflowMsg.id);
         }
 
+        // Store overflow IDs so post/skip handlers can delete them
+        reviewState.overflowMessageIds.push(...overflowMessageIds);
+
         reviewCount++;
-        markPostSeen(connectionDb, postData.postID);
+        // markPostSeen is now called upfront in the fetch layer for all unseen posts,
+        // so no need to call it here for Instagram. For safety (tiktok/twitter), keep it.
+        if (postData.postID) markPostSeen(connectionDb, postData.postID);
       } catch (err) {
         log.error({ err, reviewId }, "Failed to send review message");
         deleteReview(reviewId);
