@@ -245,7 +245,7 @@ async function fetchIgProfilePostsViaRapidApi(
 ): Promise<PostData<InstagramMetadata>[]> {
   let feedNodes: NormalizedFeedNode[];
 
-  if (!isDevMode()) {
+  if (isDevMode()) {
     const mock = loadMockJson<any>("instagram-post-rapidapi.json");
     feedNodes = parseRapidApiPostsResponse(mock);
   } else {
@@ -934,17 +934,22 @@ export async function fetchConnectionAndCreateReviews(
     // filter unseen here as a fallback.
 
     let newPosts: PostData<AnySnsMetadata>[];
-    if (connection.type === "instagram") {
-      // Instagram fetch already filtered to unseen AND limited to MAX_REVIEWS_PER_POLL
-      // It also marked ALL fetched posts as seen
-      newPosts = posts;
-    } else {
-      // TikTok/Twitter don't have the seen-check in their fetch yet
-      newPosts = posts.filter((p) => {
-        if (!p.postID) return false;
-        return !isPostSeen(connectionDb, p.postID);
-      });
-    }
+
+if (connection.type === "instagram") {
+  // Instagram already filtered and marked in fetch layer
+  newPosts = posts;
+} else {
+  // TikTok/Twitter need filtering and marking
+  newPosts = posts.filter((p) => {
+    if (!p.postID) return false;
+    return !isPostSeen(connectionDb, p.postID);
+  });
+  
+  // Mark ALL fetched posts as seen (so future polls skip them)
+  for (const post of posts) {
+    if (post.postID) markPostSeen(connectionDb, post.postID);
+  }
+}
 
     if (newPosts.length === 0) {
       upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));

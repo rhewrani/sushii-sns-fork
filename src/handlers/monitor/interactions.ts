@@ -42,6 +42,7 @@ import {
 import { buildPanelEmbed, buildReviewBatches, batchToEditOptions } from "./embed";
 import { fetchConnectionAndCreateReviews } from "./fetch";
 import { sendMonitorLog } from "./log_channel";
+import { enqueuePost } from "./queue";
 import {
   getReview,
   updateReview,
@@ -244,6 +245,7 @@ function getReviewOrWarn(reviewId: string): ReviewState | null {
   }
   return state ?? null;
 }
+
 async function handleReviewRemove(
   interaction: StringSelectMenuInteraction,
   reviewId: string,
@@ -259,15 +261,14 @@ async function handleReviewRemove(
     return;
   }
 
+  // DEFER immediately to prevent "something went wrong"
+
   const removedIndices = new Set(interaction.values.map(Number));
   updateReview(reviewId, { removedIndices });
 
   const updatedState = getReview(reviewId)!;
-
-  // FIX: Rebuild ALL batches and update all messages
   const batches = buildReviewBatches(updatedState, reviewId);
 
-  // Update all messages in the review
   const channel = interaction.channel;
   if (!channel) return;
 
@@ -277,7 +278,14 @@ async function handleReviewRemove(
 
     try {
       const msg = await channel.messages.fetch(msgId);
-      await msg.edit(batchToEditOptions(batches[i]));
+      const editOptions = {
+        flags: MessageFlags.IsComponentsV2,
+        components: batches[i].components as any,
+        content: null,
+        embeds: [],
+      } as unknown as MessageEditOptions;
+      
+      await msg.edit(editOptions);
     } catch (err) {
       log.warn({ err, msgId }, "Failed to update review message");
     }
@@ -392,14 +400,15 @@ async function handleReviewPost(
     return;
   }
 
+  // Defer immediately
   await interaction.deferUpdate();
 
   const reviewChannel = interaction.channel;
   if (!reviewChannel) return;
 
   const lastMsgId = state.messageIds[state.messageIds.length - 1];
-
-  // 1. DELETE all overflow messages immediately, keep only last one
+  
+  // Delete overflow messages immediately
   for (let i = 0; i < state.messageIds.length - 1; i++) {
     const msgId = state.messageIds[i];
     try {
@@ -409,7 +418,7 @@ async function handleReviewPost(
     }
   }
 
-  // 2. Update last message to "Posting..."
+  // Update to "Posting..."
   if (lastMsgId) {
     try {
       const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
@@ -421,23 +430,23 @@ async function handleReviewPost(
     }
   }
 
-  // 3. Do the actual posting
-  const filteredPostData = { ...state.postData, files: filteredFiles };
-  let postedToSocials = false;
-
-  try {
-    const channel = await interaction.client.channels.fetch(state.socialsChannelId);
-    if (!channel || !channel.isTextBased() || !("send" in channel)) {
-      // Update to error state
-      if (lastMsgId) {
-        const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-        await lastMsg.edit({
-          components: [new TextDisplayBuilder().setContent("❌ Failed - channel not sendable")] as any,
-        });
+  // ENQUEUE the actual posting
+  enqueuePost(async () => {
+    const filteredPostData = { ...state.postData, files: filteredFiles };
+    let postedToSocials = false;
+    
+    try {
+      const channel = await interaction.client.channels.fetch(state.socialsChannelId);
+      if (!channel || !channel.isTextBased() || !("send" in channel)) {
+        if (lastMsgId) {
+          const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
+          await lastMsg.edit({
+            components: [new TextDisplayBuilder().setContent("❌ Failed - channel not sendable")] as any,
+          });
+        }
+        return;
       }
-      return;
-    }
-    const sendable = channel as SendableChannels;
+      const sendable = channel as SendableChannels;
 
     if (state.customContent !== null) {
       if (state.format === "inline") {
@@ -530,55 +539,58 @@ async function handleReviewPost(
     }
 
     postedToSocials = true;
-  } catch (err) {
-    log.error({ err, channelId: state.socialsChannelId }, "Failed to post to socials channel");
+    } catch (err) {
+      log.error({ err, channelId: state.socialsChannelId }, "Failed to post to socials channel");
+      if (lastMsgId) {
+        try {
+          const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
+          await lastMsg.edit({
+            components: [new TextDisplayBuilder().setContent("❌ Failed to post")] as any,
+          });
+        } catch (e) { /* ignore */ }
+      }
+      throw err; // Re-throw so queue knows it failed
+    }
+
+    if (!postedToSocials) {
+      if (lastMsgId) {
+        try {
+          const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
+          await lastMsg.edit({
+            components: [new TextDisplayBuilder().setContent("❌ Failed to post")] as any,
+          });
+        } catch (e) { /* ignore */ }
+      }
+      return;
+    }
+
+    // Success! Update to "Posted" and schedule deletion
+    deleteReview(reviewId);
+
     if (lastMsgId) {
       try {
         const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
         await lastMsg.edit({
-          components: [new TextDisplayBuilder().setContent("❌ Failed to post")] as any,
+          components: [new TextDisplayBuilder().setContent("✅ Posted")] as any,
         });
-      } catch (e) { /* ignore */ }
-    }
-  }
 
-  if (!postedToSocials) {
-    if (lastMsgId) {
-      try {
-        const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-        await lastMsg.edit({
-          components: [new TextDisplayBuilder().setContent("❌ Failed to post")] as any,
-        });
-      } catch (e) { /* ignore */ }
-    }
-    return;
-  }
-
-  deleteReview(reviewId);
-
-  if (lastMsgId) {
-    try {
-      const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-      await lastMsg.edit({
-        components: [new TextDisplayBuilder().setContent("✅ Posted")] as any,
-      });
-
-      // 5. Delete the last message after 5 seconds
-      setTimeout(async () => {
+        setTimeout(async () => {
+          try {
+            await reviewChannel.messages.delete(lastMsgId);
+          } catch (err) {
+            // Already deleted
+          }
+        }, 5000);
+        
+      } catch (err) {
         try {
           await reviewChannel.messages.delete(lastMsgId);
-        } catch (err) {
-          // Already deleted
-        }
-      }, 5000);
-      
-    } catch (err) {
-      // If edit fails, delete immediately
-      try {
-        await reviewChannel.messages.delete(lastMsgId);
-      } catch (e) { /* ignore */ }
+        } catch (e) { /* ignore */ }
+      }
     }
-  }
+  }).catch(() => {
+    // Error already handled above
+  });
 }
 
 async function handleReviewSkip(
