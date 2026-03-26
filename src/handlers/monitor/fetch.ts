@@ -42,6 +42,7 @@ const fetchingInProgress = new Set<string>();
 
 async function fetchInstagramConnectionPosts(
   igUsername: string,
+  igId: string,
   options?: {
     isPostSeen?: (id: string) => boolean;
     markPostSeen?: (id: string) => void;
