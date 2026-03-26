@@ -193,6 +193,12 @@ export function buildReviewBatches(
   const fileChunks = chunkArray(files, MAX_ATTACHMENTS_PER_MESSAGE);
   const allFileNames = state.fileNames;
 
+  if (fileChunks.length === 0) {
+    const components = buildControlComponents(state, reviewId, 0);
+    batches.push({ files: [], components, isLast: true });
+    return batches;
+  }
+
   for (let i = 0; i < fileChunks.length; i++) {
     const chunk = fileChunks[i];
     const startIdx = i * MAX_ATTACHMENTS_PER_MESSAGE;
@@ -278,14 +284,16 @@ function buildControlComponents(
   }
 
   // Media gallery for this last chunk
-  const gallery = new MediaGalleryBuilder();
-  for (let i = startIdx; i < allFileNames.length; i++) {
-    const item = new MediaGalleryItemBuilder()
-      .setURL(`attachment://${allFileNames[i]}`)
-      .setSpoiler(state.removedIndices.has(i));
-    gallery.addItems(item);
+  if (allFileNames.length > 0) {
+    const gallery = new MediaGalleryBuilder();
+    for (let i = startIdx; i < allFileNames.length; i++) {
+      const item = new MediaGalleryItemBuilder()
+        .setURL(`attachment://${allFileNames[i]}`)
+        .setSpoiler(state.removedIndices.has(i));
+      gallery.addItems(item);
+    }
+    components.push(gallery);
   }
-  components.push(gallery);
 
   // Select menu for ALL images (including those in previous messages)
   if (allFileNames.length > 1) {

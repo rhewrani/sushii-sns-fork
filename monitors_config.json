@@ -4,7 +4,7 @@
   "log_channel_id": "1485628023410790490",
   "trigger_role_id": "1485639060260262059",
   "format": "inline",
-  "template": "`{date_kst} {username} Update`\n<{post_url}>\n{caption}",
+  "template": "`{date_kst} {username} Update`\n{caption}\n\n<{post_url}>",
   "connections": [
     {
       "type": "instagram",

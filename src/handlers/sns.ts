@@ -22,7 +22,7 @@ const downloaders = [
   new TikTokDownloader(),
 ];
 
-function findAllSnsLinks(content: string): SnsLink<AnySnsMetadata>[] {
+export function findAllSnsLinks(content: string): SnsLink<AnySnsMetadata>[] {
   let snsLinks: SnsLink<AnySnsMetadata>[] = [];
   for (const downloader of downloaders) {
     const urls = downloader.findUrls(content);
@@ -32,7 +32,7 @@ function findAllSnsLinks(content: string): SnsLink<AnySnsMetadata>[] {
   return snsLinks;
 }
 
-function getPlatform<M extends SnsMetadata>(
+export function getPlatform<M extends SnsMetadata>(
   metadata: M,
 ): SnsDownloader<AnySnsMetadata> {
   const downloader = downloaders.find(
@@ -45,7 +45,7 @@ function getPlatform<M extends SnsMetadata>(
   return downloader;
 }
 
-async function* snsService(
+export async function* snsService(
   snsLinks: SnsLink<AnySnsMetadata>[],
   processFn?: ProgressFn,
 ): AsyncGenerator<PostData<AnySnsMetadata>[]> {
@@ -167,7 +167,7 @@ export async function snsHandler(msg: Message<true>): Promise<void> {
   } catch (err) {
     logger.error(err, "failed to process sns message");
     let errMsg = "oops borked the download, pls try again!!";
-    errMsg += `\n\n<@150443906511667200> Error: ${err}\n`;
+    errMsg += `\n\nError: ${err}\n`;
 
     await msg.channel.send(errMsg);
   }

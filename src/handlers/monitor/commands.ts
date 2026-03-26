@@ -113,11 +113,19 @@ export async function registerSlashCommands(
         ),
     );
 
+  const postCommand = new SlashCommandBuilder()
+    .setName("post")
+    .setDescription("Post a message to the monitor channel")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption((opt) =>
+      opt.setName("url").setDescription("Post URL").setRequired(true),
+    );
+
   const rest = new REST().setToken(token);
 
   try {
     await rest.put(Routes.applicationCommands(applicationId), {
-      body: [monitorCommand.toJSON()],
+      body: [monitorCommand.toJSON(), postCommand.toJSON()],
     });
     log.info("Slash commands registered");
   } catch (err) {

@@ -808,8 +808,9 @@ async function buildTwitterPostDataFromRapidApi(
     const username = String(item?.author?.screen_name ?? "unknown");
     const postUrl = postId ? `https://x.com/${username}/status/${postId}` : "";
 
-    const rawMedia = item?.media ?? {};
+    if (!postId || !postUrl) continue;  // Check EARLY
 
+    const rawMedia = item?.media ?? {};
     const mediaUrls: string[] = [];
 
     // Handle photos
@@ -820,7 +821,7 @@ async function buildTwitterPostDataFromRapidApi(
       }
     }
 
-    // Handle videos — pick the highest bitrate variant
+    // Handle videos
     if (Array.isArray(rawMedia.video)) {
       for (const video of rawMedia.video) {
         const variants: any[] = video?.variants ?? [];
@@ -833,7 +834,7 @@ async function buildTwitterPostDataFromRapidApi(
       }
     }
 
-    // Handle animated GIFs if present
+    // Handle animated GIFs
     if (Array.isArray(rawMedia.animated_gif)) {
       for (const gif of rawMedia.animated_gif) {
         const variants: any[] = gif?.variants ?? [];
@@ -842,31 +843,30 @@ async function buildTwitterPostDataFromRapidApi(
       }
     }
 
-    if (!postId || !postUrl) continue;
-
-    const files = await downloadFilesFromUrls(mediaUrls);
+    // FIX: Don't skip text-only posts - allow empty mediaUrls
+    const files = mediaUrls.length > 0 
+      ? await downloadFilesFromUrls(mediaUrls)
+      : [];  // Empty files array for text-only posts
 
     out.push({
       postLink: {
         url: postUrl,
-        metadata: {
-          platform: "twitter",
-          username,
-          id: postId
+        metadata: { 
+          platform: "twitter", 
+          username, 
+          id: postId 
         },
       },
       username,
       postID: postId,
       originalText: processText(item),
       timestamp: item?.created_at ? new Date(item.created_at) : undefined,
-      files,
+      files,  // Can be empty for text-only
     });
   }
 
   return out;
 }
-
-
 
 export async function fetchConnectionAndCreateReviews(
   interaction: ButtonInteraction,
@@ -935,21 +935,22 @@ export async function fetchConnectionAndCreateReviews(
 
     let newPosts: PostData<AnySnsMetadata>[];
 
-if (connection.type === "instagram") {
-  // Instagram already filtered and marked in fetch layer
-  newPosts = posts;
-} else {
-  // TikTok/Twitter need filtering and marking
-  newPosts = posts.filter((p) => {
-    if (!p.postID) return false;
-    return !isPostSeen(connectionDb, p.postID);
-  });
-  
-  // Mark ALL fetched posts as seen (so future polls skip them)
-  for (const post of posts) {
-    if (post.postID) markPostSeen(connectionDb, post.postID);
-  }
-}
+    if (connection.type === "instagram") {
+      // Instagram already filtered and marked in fetch layer
+      // Reason: since we want to only show 3 posts, we filter already in the fetch layer before each post is processed to save time and resources
+      newPosts = posts;
+    } else {
+      // TikTok/Twitter need filtering and marking
+      newPosts = posts.filter((p) => {
+        if (!p.postID) return false;
+        return !isPostSeen(connectionDb, p.postID);
+      });
+
+      // Mark ALL fetched posts as seen (so future polls skip them)
+      for (const post of posts) {
+        if (post.postID) markPostSeen(connectionDb, post.postID);
+      }
+    }
 
     if (newPosts.length === 0) {
       upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
@@ -964,6 +965,12 @@ if (connection.type === "instagram") {
     }
 
     const postsToReview = newPosts.slice(0, MAX_REVIEWS_PER_POLL);
+
+    console.log("Posts to review:", postsToReview.map(p => ({ 
+      id: p.postID, 
+      fileCount: p.files.length,
+      text: p.originalText?.slice(0, 30)
+    })));
 
     const socialsChannelId = monitorsConfig.socials_channel_id;
     let reviewCount = 0;

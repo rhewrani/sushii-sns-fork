@@ -39,7 +39,7 @@ import {
   purgeConnectionSeenPosts,
   upsertPanelMessage,
 } from "./db";
-import { buildPanelEmbed, buildReviewBatches, batchToEditOptions } from "./embed";
+import { buildPanelEmbed, buildReviewBatches } from "./embed";
 import { fetchConnectionAndCreateReviews } from "./fetch";
 import { sendMonitorLog } from "./log_channel";
 import { enqueuePost } from "./queue";
@@ -55,6 +55,7 @@ import {
   REVIEW_SKIP_PREFIX,
   type ReviewState,
 } from "./review";
+import { findAllSnsLinks, getPlatform, snsService } from "../sns";
 
 const log = logger.child({ module: "monitor/interactions" });
 
@@ -656,6 +657,112 @@ async function handleReviewSkip(
   }
 }
 
+async function handlePostCommand(
+  interaction: ChatInputCommandInteraction,
+  monitorsConfig: MonitorsConfig,
+  serverConfig: ServerConfig | null,
+  client: Client,
+  db: Database,
+): Promise<void> {
+  if (!interaction.channel || !("send" in interaction.channel)) {
+    throw new Error("Cannot send in this channel.");
+  }
+
+  const postUrl = interaction.options.getString("post_url", true);
+  
+  // now similar to dl command
+
+  log.debug(
+    { requester: interaction.user.username, content: postUrl },
+    "Processing sns message",
+  );
+
+  const posts = findAllSnsLinks(postUrl);
+
+  if (posts.length === 0) {
+    log.debug(
+      { requester: interaction.user.username, content: postUrl },
+      "No sns posts found",
+    );
+
+    return;
+  }
+
+  interaction.deferReply();
+
+  interaction.editReply("Processing");
+  
+    // let progressInteraction: Interaction | null = null;
+    let progressPromise = Promise.resolve();
+  
+    const progressUpdater = async (content: string, done?: boolean) => {
+      // Create a new function that captures the current operation
+      const updateOperation = async () => {
+        try {
+          // Delete when done
+          // if (done && progressInteraction) {
+          //   await progressInteraction.editReply(content);
+          //   progressInteraction = null;
+          //   return;
+          // }
+  
+          // Edit if exists
+          if (interaction) {
+            await interaction.editReply(content);
+            return;
+          }
+        } catch (err) {
+          logger.error(err, "failed to send sns progress update message");
+        }
+      };
+  
+      // Wait for previous operations to complete, then run this one
+      progressPromise = progressPromise.then(updateOperation);
+      return progressPromise;
+    };
+  
+    try {
+      for await (const postDatas of snsService(posts, progressUpdater)) {
+        for (const postData of postDatas) {
+          const platform = getPlatform(postData.postLink.metadata);
+  
+          // 1. Send images first
+          // 2. Get the links to images
+          // 3. Send the message with the links
+          const fileMsgs = platform.buildDiscordAttachments(postData); // need to change this
+  
+          const attachments: Attachment[] = [];
+  
+          for (const fileMsg of fileMsgs) {
+            const filesMsg = await interaction.channel.send(fileMsg);
+            attachments.push(...filesMsg.attachments.values());
+          }
+  
+          const links = attachments.map((attachment) => attachment.url);
+          const msgs = platform.buildDiscordMessages(postData, links);
+  
+          for (const postMsg of msgs) {
+            await msg.reply({
+              ...postMsg,
+              allowedMentions: { parse: [] },
+            });
+          }
+        }
+      }
+    } catch (err) {
+      logger.error(err, "failed to process sns message");
+      let errMsg = "oops borked the download, pls try again!!";
+      errMsg += `\n\nError: ${err}\n`;
+  
+      if (!interaction.deferred) {
+          await interaction.reply({ content: errMsg });
+        } else {
+          await interaction.followUp({ content: errMsg });
+        }
+    }
+
+}
+
 
 // ---------------------------------------------------------------------------
 // Main dispatcher
@@ -727,7 +834,7 @@ export async function handleInteraction(
     if (interaction.isChatInputCommand()) {
       const cmd = interaction as ChatInputCommandInteraction;
 
-      if (cmd.commandName !== "monitor") return;
+      if (cmd.commandName !== "monitor" && cmd.commandName !== "post") return;
 
       if (!cmd.guildId) {
         await cmd.reply({ content: "Must be used in a guild.", ephemeral: true });
@@ -740,6 +847,11 @@ export async function handleInteraction(
           content: "You need Manage Guild permission to use this command.",
           ephemeral: true,
         });
+        return;
+      }
+
+      if (cmd.commandName === "post") {
+        await handlePostCommand(interaction, monitorsConfig, serverConfig, client, db);
         return;
       }
 
@@ -923,3 +1035,5 @@ export async function handleInteraction(
     }
   }
 }
+
+
