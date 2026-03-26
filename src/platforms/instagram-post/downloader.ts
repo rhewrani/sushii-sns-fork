@@ -391,13 +391,13 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
   ): Promise<PostData<InstagramMetadata>[]> {
     return tryWithFallbacks([
       {
-        name: "Brightdata",
-        fn: () => this.fetchContentViaBrightdata(snsLink, progressCallback),
-      },
-      {
         name: "RapidAPI mediaByShortcode",
         fn: () => this.fetchContentViaRapidApi(snsLink),
       },
+      // {
+      //   name: "Brightdata",
+      //   fn: () => this.fetchContentViaBrightdata(snsLink, progressCallback),
+      // },
       // TODO: Add additional fallback provider here
       // { name: "Placeholder", fn: () => ... },
     ]);

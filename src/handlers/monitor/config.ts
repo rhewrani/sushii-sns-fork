@@ -7,6 +7,7 @@ export const ConnectionTypeSchema = z.enum(["instagram", "tiktok", "twitter"]);
 export const ConnectionSchema = z.object({
   type: ConnectionTypeSchema,
   handle: z.string().min(1),
+  igId: z.string().min(1).optional(),
   cooldown_seconds: z.number().int().nonnegative(),
 });
 

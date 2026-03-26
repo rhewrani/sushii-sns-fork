@@ -49,7 +49,7 @@ async function fetchInstagramConnectionPosts(
   },
 ): Promise<PostData<AnySnsMetadata>[]> {
   const [profilePosts, storyPosts] = await Promise.all([
-    fetchIgProfilePosts(igUsername, options),
+    fetchIgProfilePosts(igUsername, igId, options),
     fetchInstagramStories(igUsername),
   ]);
 
@@ -94,7 +94,7 @@ function isCarouselNode(node: any): boolean {
  * Parse the RapidAPI /posts response into normalized feed nodes.
  * Carousels are flagged for individual fetching; single posts get their media URL inline.
  */
-function parseRapidApiPostsResponse(json: any): NormalizedFeedNode[] {
+function parseRapidApiPostsResponse120(json: any): NormalizedFeedNode[] {
   let rawNodes: any[] | undefined;
 
   if (Array.isArray(json)) {
@@ -110,14 +110,14 @@ function parseRapidApiPostsResponse(json: any): NormalizedFeedNode[] {
   }
 
   if (!rawNodes) {
-    log.error({ responseKeys: Object.keys(json ?? {}) }, "Unknown RapidAPI /posts response shape");
-    throw new Error("RapidAPI /posts returned unexpected response format");
+    // log.error({ responseKeys: Object.keys(json ?? {}) }, "Unknown RapidAPI120 /posts response shape");
+    throw new Error("RapidAPI120 /posts returned unexpected response format");
   }
 
   // If this looks like it already has the flattened `urls` shape (pre-processed),
   // we can't use it here — this path only handles raw GraphQL/node shapes.
   if (rawNodes.length > 0 && rawNodes[0].urls) {
-    log.warn("RapidAPI /posts returned pre-flattened items — carousel detection unavailable");
+    log.warn("RapidAPI120 /posts returned pre-flattened items — carousel detection unavailable");
     // Best-effort: treat everything as single
     return rawNodes.flatMap((item: any) => {
       const shortcode = item.meta?.shortcode;
@@ -204,38 +204,11 @@ function parseRapidApiPostsResponse(json: any): NormalizedFeedNode[] {
 }
 
 /**
- * Fetch all media items for a shortcode via RapidAPI mediaByShortcode.
- * Used for carousel posts where the /posts feed only returns the cover image.
- */
-async function fetchCarouselViaMediaByShortcode(shortcode: string): Promise<RapidApiMediaResponse> {
-  const req = new Request(
-    "https://instagram120.p.rapidapi.com/api/instagram/mediaByShortcode",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-rapidapi-host": "instagram120.p.rapidapi.com",
-        "x-rapidapi-key": config.RAPID_API_KEY,
-      },
-      body: JSON.stringify({ shortcode }),
-    },
-  );
-
-  const res = await fetch(req);
-  if (!res.ok) {
-    throw new Error(`RapidAPI mediaByShortcode failed for ${shortcode} (${res.status})`);
-  }
-
-  const rawJson = await res.json();
-  return RapidApiMediaResponseSchema.parse(rawJson);
-}
-
-/**
  * Fetch all posts for an Instagram profile via RapidAPI /posts endpoint.
  * Carousel posts are detected in the feed and fetched individually via mediaByShortcode
  * since the /posts endpoint does not include carousel children.
  */
-async function fetchIgProfilePostsViaRapidApi(
+async function fetchIgProfilePostsViaRapidApi120(
   igUsername: string,
   options?: {
     isPostSeen?: (id: string) => boolean;
@@ -247,7 +220,7 @@ async function fetchIgProfilePostsViaRapidApi(
 
   if (isDevMode()) {
     const mock = loadMockJson<any>("instagram-post-rapidapi.json");
-    feedNodes = parseRapidApiPostsResponse(mock);
+    feedNodes = parseRapidApiPostsResponse120(mock);
   } else {
     const req = new Request(
       "https://instagram120.p.rapidapi.com/api/instagram/posts",
@@ -264,11 +237,38 @@ async function fetchIgProfilePostsViaRapidApi(
 
     const res = await fetch(req);
     if (!res.ok) {
-      throw new Error(`RapidAPI /posts failed (${res.status})`);
+      // Capture the actual error message from RapidAPI
+      let errorBody: string | object = "Unknown error";
+      try {
+        const clonedRes = res.clone(); // Clone so we can read body without consuming original
+        errorBody = await clonedRes.text();
+        // Try to parse as JSON for structured error info
+        try {
+          errorBody = JSON.parse(errorBody as string);
+        } catch {
+          // Keep as text if not valid JSON
+        }
+      } catch {
+        // Fallback if we can't read the body
+      }
+
+      log.error(
+        {
+          status: res.status,
+          statusText: res.statusText,
+          errorBody,
+          url: req.url
+        },
+        "RapidAPI120 /posts failed"
+      );
+
+      throw new Error(
+        `RapidAPI120 /posts failed: ${res.status} ${res.statusText} - ${typeof errorBody === 'string' ? errorBody : JSON.stringify(errorBody)}`
+      );
     }
 
     const rawJson = await res.json();
-    feedNodes = parseRapidApiPostsResponse(rawJson);
+    feedNodes = parseRapidApiPostsResponse120(rawJson);
   }
 
   const limit = options?.limit ?? Infinity;
@@ -297,24 +297,15 @@ async function fetchIgProfilePostsViaRapidApi(
 
     let mediaUrls: string[];
 
-    if (node.carouselUrls && node.carouselUrls.length > 0) {
-      // Carousel with slides already extracted inline from the feed response
+    if (node.carouselUrls?.length) {
       mediaUrls = node.carouselUrls;
-    } else if (node.isCarousel) {
-      // Carousel flagged but no inline data — fetch individually via mediaByShortcode
-      try {
-        const carouselItems = await fetchCarouselViaMediaByShortcode(shortcode);
-        mediaUrls = carouselItems
-          .flatMap((item) => item.urls.map((u) => u.url))
-          .filter((u) => u.length > 0);
-        log.debug({ shortcode, mediaCount: mediaUrls.length }, "Fetched carousel via mediaByShortcode");
-      } catch (err) {
-        log.error({ err, shortcode }, "Failed to fetch carousel via mediaByShortcode, skipping");
-        continue;
-      }
-    } else {
-      if (!node.singleMediaUrl) continue;
+    } else if (node.singleMediaUrl) {
       mediaUrls = [node.singleMediaUrl];
+    } else {
+      if (node.isCarousel) {
+        log.error({ shortcode, node }, "Carousel flagged but no URLs - unexpected RapidAPI response");
+      }
+      continue;
     }
 
     if (mediaUrls.length === 0) continue;
@@ -336,6 +327,209 @@ async function fetchIgProfilePostsViaRapidApi(
 
   return postDatas;
 }
+
+
+function parseRapidApiPostsResponseLooter(json: any): NormalizedFeedNode[] {
+  const edges = json?.data?.user?.edge_owner_to_timeline_media?.edges;
+
+  if (!Array.isArray(edges)) {
+    log.error({
+      rootKeys: Object.keys(json ?? {}),
+      dataKeys: json?.data ? Object.keys(json.data) : 'no data',
+      userKeys: json?.data?.user ? Object.keys(json.data.user) : 'no user',
+    }, "Unknown RapidAPI-Looter /user-feeds2 response shape");
+    throw new Error("RapidAPI-Looter /user-feeds2 returned unexpected response format");
+  }
+
+  const nodes: NormalizedFeedNode[] = [];
+
+  for (const edge of edges) {
+    const node = edge.node;
+    if (!node) continue;
+
+    const shortcode = node.shortcode;
+    if (!shortcode) continue;
+
+    const meta = {
+      title: node.edge_media_to_caption?.edges?.[0]?.node?.text ?? "",
+      sourceUrl: `https://www.instagram.com/p/${shortcode}/`,
+      shortcode,
+      username: node.owner?.username,
+      takenAt: node.taken_at_timestamp,
+    };
+
+    // Carousel: __typename === "GraphSidecar" or has edge_sidecar_to_children
+    const isCarousel =
+      node.__typename === "GraphSidecar" ||
+      !!node.edge_sidecar_to_children;
+
+    if (isCarousel) {
+      const children = node.edge_sidecar_to_children?.edges;
+
+      if (Array.isArray(children) && children.length > 0) {
+        const carouselUrls = children
+          .map((child: any) => {
+            const slide = child.node;
+            // Video slide has video_url, image has display_url
+            return slide.video_url ?? slide.display_url;
+          })
+          .filter((u: unknown): u is string => typeof u === "string" && u.length > 0);
+
+        if (carouselUrls.length > 0) {
+          nodes.push({ shortcode, isCarousel: false, meta, carouselUrls });
+          continue;
+        }
+      }
+
+      log.warn({ shortcode }, "Carousel detected but no children found");
+      continue;
+    }
+
+    // Single media
+    const mediaUrl = node.video_url ?? node.display_url;
+    if (!mediaUrl) {
+      log.warn({ shortcode }, "No media URL found, skipping");
+      continue;
+    }
+
+    nodes.push({
+      shortcode,
+      isCarousel: false,
+      meta,
+      singleMediaUrl: mediaUrl,
+      isVideo: node.is_video === true,
+    });
+  }
+
+  return nodes;
+}
+
+/**
+ * Fetch all posts for an Instagram profile via RapidAPI /user-feeds2 endpoint.
+ * Carousel posts are detected in the feed and fetched individually via mediaByShortcode
+ * since the /user-feeds2 endpoint does not include carousel children.
+ */
+async function fetchIgProfilePostsViaRapidApiLooter(
+  igUsername: string,
+  igId: string,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
+): Promise<PostData<InstagramMetadata>[]> {
+  let feedNodes: NormalizedFeedNode[];
+
+  if (isDevMode()) {
+    const mock = loadMockJson<any>("instagram-post-rapidapi.json");
+    feedNodes = parseRapidApiPostsResponseLooter(mock);
+  } else {
+    const req = new Request(
+      `https://instagram-looter2.p.rapidapi.com/user-feeds2?id=${igId}&count=4`,
+      {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "x-rapidapi-host": "instagram-looter2.p.rapidapi.com",
+          "x-rapidapi-key": config.RAPID_API_KEY,
+        },
+      },
+    );
+
+    const res = await fetch(req);
+    if (!res.ok) {
+      // Capture the actual error message from RapidAPI
+      let errorBody: string | object = "Unknown error";
+      try {
+        const clonedRes = res.clone(); // Clone so we can read body without consuming original
+        errorBody = await clonedRes.text();
+        // Try to parse as JSON for structured error info
+        try {
+          errorBody = JSON.parse(errorBody as string);
+        } catch {
+          // Keep as text if not valid JSON
+        }
+      } catch {
+        // Fallback if we can't read the body
+      }
+
+      log.error(
+        {
+          status: res.status,
+          statusText: res.statusText,
+          errorBody,
+          url: req.url
+        },
+        "RapidAPI-Looter /user-feeds2 failed"
+      );
+
+      throw new Error(
+        `RapidAPI-Looter /user-feeds2 failed: ${res.status} ${res.statusText} - ${typeof errorBody === 'string' ? errorBody : JSON.stringify(errorBody)}`
+      );
+    }
+
+    const rawJson = await res.json();
+    feedNodes = parseRapidApiPostsResponseLooter(rawJson);
+  }
+
+  const limit = options?.limit ?? Infinity;
+  const seenChecker = options?.isPostSeen;
+  const markSeen = options?.markPostSeen;
+
+  // Separate unseen nodes from seen ones upfront — no downloading yet.
+  const unseenNodes = feedNodes.filter((n) => !seenChecker?.(n.shortcode));
+
+  // Mark ALL unseen nodes as seen immediately so future polls skip them,
+  // even if we only download the first `limit` ones below.
+  if (markSeen) {
+    for (const node of unseenNodes) {
+      markSeen(node.shortcode);
+    }
+  }
+
+  // Only download media for the first `limit` unseen posts.
+  const nodesToDownload = unseenNodes.slice(0, limit);
+  const postDatas: PostData<InstagramMetadata>[] = [];
+
+  for (const node of nodesToDownload) {
+    const { shortcode, meta } = node;
+
+    const postUrl = meta.sourceUrl ?? `https://www.instagram.com/p/${shortcode}/`;
+
+    let mediaUrls: string[];
+
+    if (node.carouselUrls?.length) {
+      mediaUrls = node.carouselUrls;
+    } else if (node.singleMediaUrl) {
+      mediaUrls = [node.singleMediaUrl];
+    } else {
+      if (node.isCarousel) {
+        log.error({ shortcode, node }, "Carousel flagged but no URLs - unexpected RapidAPI response");
+      }
+      continue;
+    }
+
+    if (mediaUrls.length === 0) continue;
+
+    const files = await downloadFilesFromUrls(mediaUrls);
+
+    postDatas.push({
+      postLink: {
+        url: postUrl,
+        metadata: { platform: "instagram" as const, shortcode },
+      },
+      username: meta.username || igUsername,
+      postID: shortcode,
+      originalText: meta.title || "",
+      timestamp: meta.takenAt ? new Date(meta.takenAt * 1000) : undefined,
+      files,
+    });
+  }
+
+  return postDatas;
+}
+
+
 
 /**
  * Fetch all posts for an Instagram profile via the Brightdata API.
@@ -366,19 +560,19 @@ async function fetchIgProfilePostsViaBrightdata(
   const profileUrl = `https://www.instagram.com/${igUsername}/`;
 
   const triggerReq = new Request(
-    "https://api.brightdata.com/datasets/v3/trigger?dataset_id=gd_lk5ns7kz21pck8jpis&include_errors=true",
+    "https://api.brightdata.com/datasets/v3/scrape?dataset_id=gd_lk5ns7kz21pck8jpis&include_errors=true&type=discover_new&discover_by=url",
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${config.BD_API_TOKEN}`,
       },
-      body: JSON.stringify([{ url: profileUrl }]),
+      body: JSON.stringify([{ url: profileUrl, num_of_posts: 4 }]),
     },
   );
 
   const triggerRes = await fetch(triggerReq);
-  if (triggerRes.status !== 200) {
+  if (triggerRes.status !== 200 && triggerRes.status !== 202) {
     throw new Error(
       `Failed to trigger IG profile fetch: ${triggerRes.status}`,
     );
@@ -416,6 +610,7 @@ async function fetchIgProfilePostsViaBrightdata(
   // Normalise to the latter before building PostData so all files end up together.
   const groupedByPostId = new Map<string, InstagramPostElement>();
   for (const post of posts) {
+    console.log(post.post_id);
     const id = post.post_id || post.url || "";
     const existing = groupedByPostId.get(id);
     if (existing) {
@@ -448,6 +643,7 @@ async function fetchIgProfilePostsViaBrightdata(
  */
 export async function fetchIgProfilePosts(
   igUsername: string,
+  igId: string,
   options?: {
     isPostSeen?: (id: string) => boolean;
     markPostSeen?: (id: string) => void;
@@ -456,13 +652,17 @@ export async function fetchIgProfilePosts(
 ): Promise<PostData<InstagramMetadata>[]> {
   return tryWithFallbacks([
     {
-      name: "RapidAPI /posts",
-      fn: () => fetchIgProfilePostsViaRapidApi(igUsername, options),
+      name: "RapidAPI-Looter /user-feeds2", // private data + real-time data
+      fn: () => fetchIgProfilePostsViaRapidApiLooter(igUsername, igId, options),
     },
     {
-      name: "Brightdata /posts",
-      fn: () => fetchIgProfilePostsViaBrightdata(igUsername),
+      name: "RapidAPI120 /posts", // only private data, not real-time
+      fn: () => fetchIgProfilePostsViaRapidApi120(igUsername, options),
     },
+    // {
+    //   name: "Brightdata /posts", // public data
+    //   fn: () => fetchIgProfilePostsViaBrightdata(igUsername),
+    // },
   ]);
 }
 
@@ -844,17 +1044,17 @@ async function buildTwitterPostDataFromRapidApi(
     }
 
     // FIX: Don't skip text-only posts - allow empty mediaUrls
-    const files = mediaUrls.length > 0 
+    const files = mediaUrls.length > 0
       ? await downloadFilesFromUrls(mediaUrls)
       : [];  // Empty files array for text-only posts
 
     out.push({
       postLink: {
         url: postUrl,
-        metadata: { 
-          platform: "twitter", 
-          username, 
-          id: postId 
+        metadata: {
+          platform: "twitter",
+          username,
+          id: postId
         },
       },
       username,
@@ -896,11 +1096,17 @@ export async function fetchConnectionAndCreateReviews(
     const connectionDb = getConnectionDb(connectionId);
 
     const MAX_REVIEWS_PER_POLL = 3;
+    const MAX_STORIES_PER_POLL = 10;
 
     let posts: PostData<AnySnsMetadata>[] = [];
     if (connection.type === "instagram") {
       try {
-        posts = await fetchInstagramConnectionPosts(connection.handle, {
+        if (!connection.igId) {
+          await interaction.editReply("Instagram ID not configured for this connection.");
+          return;
+        }
+
+        posts = await fetchInstagramConnectionPosts(connection.handle, connection.igId, {
           isPostSeen: (id) => isPostSeen(connectionDb, id),
           markPostSeen: (id) => markPostSeen(connectionDb, id),
           limit: MAX_REVIEWS_PER_POLL,
@@ -964,13 +1170,38 @@ export async function fetchConnectionAndCreateReviews(
       return;
     }
 
-    const postsToReview = newPosts.slice(0, MAX_REVIEWS_PER_POLL);
+    // NEW
 
-    console.log("Posts to review:", postsToReview.map(p => ({ 
-      id: p.postID, 
+
+    let postsToReview: PostData<AnySnsMetadata>[] = [];
+    let stories: PostData<AnySnsMetadata>[] = [];
+    let regularPosts: PostData<AnySnsMetadata>[] = [];
+
+    if (connection.type === "instagram") {
+      // Stories are exempt from the MAX_REVIEWS_PER_POLL cap
+      const isInstagramStory = (p: PostData<AnySnsMetadata>): boolean =>
+        p.postLink?.metadata?.platform === "instagram-story";
+
+      stories = newPosts.filter(isInstagramStory);
+      regularPosts = newPosts.filter(p => !isInstagramStory(p));
+      // Cap regular posts at MAX_REVIEWS_PER_POLL, but include ALL stories
+      postsToReview = [
+        ...stories.slice(0, MAX_STORIES_PER_POLL),
+        ...regularPosts.slice(0, MAX_REVIEWS_PER_POLL)
+      ];
+    } else {
+      // For non-Instagram platforms, apply the cap to all posts (unchanged)
+      postsToReview = newPosts.slice(0, MAX_REVIEWS_PER_POLL);
+    }
+
+    console.log("Posts to review:", postsToReview.map(p => ({
+      id: p.postID,
       fileCount: p.files.length,
-      text: p.originalText?.slice(0, 30)
+      text: p.originalText?.slice(0, 30),
+      platform: p.postLink?.metadata?.platform
     })));
+
+    // NEW
 
     const socialsChannelId = monitorsConfig.socials_channel_id;
     let reviewCount = 0;
@@ -1028,9 +1259,15 @@ export async function fetchConnectionAndCreateReviews(
 
     upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
 
-    await interaction.editReply(
-      `Found ${reviewCount} new post${reviewCount === 1 ? "" : "s"}. Review messages created below.`,
-    );
+    if (connection.type === "instagram") {
+      await interaction.editReply(
+        `Found ${reviewCount} new post${reviewCount === 1 ? "" : "s"} (${stories.length} story${stories.length === 1 ? "" : "s"} + ${regularPosts.slice(0, MAX_REVIEWS_PER_POLL).length} post${regularPosts.slice(0, MAX_REVIEWS_PER_POLL).length === 1 ? "" : "s"}). Review messages created below.`,
+      );
+    } else {
+      await interaction.editReply(
+        `Found ${reviewCount} new post${reviewCount === 1 ? "" : "s"}. Review messages created below.`,
+      );
+    }
   } finally {
     fetchingInProgress.delete(connectionId);
   }

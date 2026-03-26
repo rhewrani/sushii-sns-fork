@@ -104,3 +104,31 @@ export function buildInlineFormatContent(
   const vars = buildTemplateVars(postData);
   return renderTemplate(template, vars).slice(0, 2000);
 }
+
+/*
+ * Suppresses links in text except the last one
+ * Used for twitter text-only posts
+ * @param text - The text to suppress links in
+ * @returns The text with links suppressed except the last one
+ */
+export function suppressLinksInTextExceptLast(text: string): string {
+  const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/g;
+  const urls: string[] = [];
+  let match;
+  
+  // Find all URLs
+  while ((match = urlRegex.exec(text)) !== null) {
+    urls.push(match[0]);
+  }
+  
+  if (urls.length === 0) return text;
+  
+  const lastUrl = urls[urls.length - 1];
+  
+  return text.replace(urlRegex, (url) => {
+    if (url.startsWith('<') && url.endsWith('>')) return url;
+    // Don't wrap the last URL
+    if (url === lastUrl) return url;
+    return `<${url}>`;
+  });
+}

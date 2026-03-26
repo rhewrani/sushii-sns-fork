@@ -4,16 +4,18 @@
   "log_channel_id": "1485628023410790490",
   "trigger_role_id": "1485639060260262059",
   "format": "inline",
-  "template": "`{date_kst} {username} Update`\n{caption}\n\n<{post_url}>",
+  "template": "`{date_kst} {username} {platform} Update`\n{caption}\n\n{post_url}",
   "connections": [
     {
       "type": "instagram",
       "handle": "lalalalisa_m",
+      "igId": "8012033210",
       "cooldown_seconds": 0
     },
     {
       "type": "instagram",
       "handle": "wearelloud",
+      "igId": "64466054435",
       "cooldown_seconds": 0
     },
     {

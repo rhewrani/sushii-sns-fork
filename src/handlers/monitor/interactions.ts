@@ -19,10 +19,11 @@ import {
 } from "discord.js";
 import type { ServerConfig } from "../../config/server_config";
 import logger from "../../logger";
-import { chunkArray, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
+import { chunkArray, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE, sendPostToChannel } from "../../utils/discord";
 import {
   buildInlineFormatContent,
   buildLinksFormatMessages,
+  suppressLinksInTextExceptLast,
 } from "../../utils/template";
 import type { MonitorsConfig } from "./config";
 import {
@@ -285,7 +286,7 @@ async function handleReviewRemove(
         content: null,
         embeds: [],
       } as unknown as MessageEditOptions;
-      
+
       await msg.edit(editOptions);
     } catch (err) {
       log.warn({ err, msgId }, "Failed to update review message");
@@ -363,7 +364,7 @@ async function handleReviewModalSubmit(
         content: null,
         embeds: [],
       } as unknown as MessageEditOptions;
-      
+
       await msg.edit(editOptions);
     } catch (err) {
       log.warn({ err, msgId }, "Failed to update review message");
@@ -408,7 +409,7 @@ async function handleReviewPost(
   if (!reviewChannel) return;
 
   const lastMsgId = state.messageIds[state.messageIds.length - 1];
-  
+
   // Delete overflow messages immediately
   for (let i = 0; i < state.messageIds.length - 1; i++) {
     const msgId = state.messageIds[i];
@@ -419,7 +420,6 @@ async function handleReviewPost(
     }
   }
 
-  // Update to "Posting..."
   if (lastMsgId) {
     try {
       const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
@@ -435,7 +435,7 @@ async function handleReviewPost(
   enqueuePost(async () => {
     const filteredPostData = { ...state.postData, files: filteredFiles };
     let postedToSocials = false;
-    
+
     try {
       const channel = await interaction.client.channels.fetch(state.socialsChannelId);
       if (!channel || !channel.isTextBased() || !("send" in channel)) {
@@ -447,99 +447,14 @@ async function handleReviewPost(
         }
         return;
       }
-      const sendable = channel as SendableChannels;
+      const filteredPostData = { ...state.postData, files: filteredFiles };
+  
+      await sendPostToChannel(channel as SendableChannels, filteredPostData, {
+        format: state.format as "inline" | "links",
+        template: state.template,
+      });
 
-    if (state.customContent !== null) {
-      if (state.format === "inline") {
-        const attachments = filteredFiles.map((f, i) =>
-          new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
-        );
-        const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
-
-        if (chunks.length === 0) {
-          await sendable.send({
-            content: state.customContent ?? undefined,
-            flags: MessageFlags.SuppressEmbeds,
-          });
-        } else {
-          // Send text first, then media chunks
-          await sendable.send({
-            content: state.customContent,
-            flags: MessageFlags.SuppressEmbeds,
-          });
-          for (const chunk of chunks) {
-            await sendable.send({
-              files: chunk,
-              flags: MessageFlags.SuppressEmbeds,
-            });
-          }
-        }
-      } else {
-        // links format: upload attachments first to get CDN URLs, then send text + URLs
-        const attachmentMsgs = chunkArray(
-          filteredFiles.map((f, i) =>
-            new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
-          ),
-          MAX_ATTACHMENTS_PER_MESSAGE,
-        );
-        const cdnUrls: string[] = [];
-        for (const chunk of attachmentMsgs) {
-          const sent = await sendable.send({ files: chunk, flags: MessageFlags.SuppressEmbeds });
-          for (const att of sent.attachments.values()) {
-            cdnUrls.push(att.url);
-          }
-        }
-
-        for (const chunk of itemsToMessageContents(state.customContent, cdnUrls)) {
-          await sendable.send({ content: chunk, flags: MessageFlags.SuppressEmbeds });
-        }
-      }
-    } else if (state.format === "inline") {
-      const content = buildInlineFormatContent(state.template, filteredPostData as any);
-      const attachments = filteredFiles.map((f, i) =>
-        new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
-      );
-      const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
-
-      if (chunks.length === 0) {
-        await sendable.send({
-          content: content,
-          flags: MessageFlags.SuppressEmbeds,
-        });
-      } else {
-        // Send text first, then media chunks
-        await sendable.send({
-          content,
-          flags: MessageFlags.SuppressEmbeds,
-        });
-        for (const chunk of chunks) {
-          await sendable.send({
-            files: chunk,
-            flags: MessageFlags.SuppressEmbeds,
-          });
-        }
-      }
-    } else {
-      // links format: upload files first to get CDN URLs, then send text + URLs
-      const attachments = filteredFiles.map((f, i) =>
-        new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`),
-      );
-      const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
-      const cdnUrls: string[] = [];
-      for (const chunk of chunks) {
-        const sent = await sendable.send({ files: chunk, flags: MessageFlags.SuppressEmbeds });
-        for (const att of sent.attachments.values()) {
-          cdnUrls.push(att.url);
-        }
-      }
-
-      const textMsgs = buildLinksFormatMessages(state.template, filteredPostData as any, cdnUrls);
-      for (const msg of textMsgs) {
-        await sendable.send(msg);
-      }
-    }
-
-    postedToSocials = true;
+      postedToSocials = true;
     } catch (err) {
       log.error({ err, channelId: state.socialsChannelId }, "Failed to post to socials channel");
       if (lastMsgId) {
@@ -582,7 +497,7 @@ async function handleReviewPost(
             // Already deleted
           }
         }, 5000);
-        
+
       } catch (err) {
         try {
           await reviewChannel.messages.delete(lastMsgId);
@@ -647,7 +562,7 @@ async function handleReviewSkip(
           // Already deleted
         }
       }, 5000);
-      
+
     } catch (err) {
       // If edit fails, delete immediately
       try {
@@ -664,105 +579,58 @@ async function handlePostCommand(
   client: Client,
   db: Database,
 ): Promise<void> {
-  if (!interaction.channel || !("send" in interaction.channel)) {
-    throw new Error("Cannot send in this channel.");
-  }
+  await interaction.deferReply();
 
-  const postUrl = interaction.options.getString("post_url", true);
-  
-  // now similar to dl command
-
-  log.debug(
-    { requester: interaction.user.username, content: postUrl },
-    "Processing sns message",
-  );
+  const postUrl = interaction.options.getString("url", true);
+  log.debug({ requester: interaction.user.username, url: postUrl }, "Processing /post");
 
   const posts = findAllSnsLinks(postUrl);
-
   if (posts.length === 0) {
-    log.debug(
-      { requester: interaction.user.username, content: postUrl },
-      "No sns posts found",
-    );
-
+    await interaction.editReply("❌ No valid social media links found.");
     return;
   }
 
-  interaction.deferReply();
+  const socialsChannel = await client.channels.fetch(monitorsConfig.socials_channel_id);
+  if (!socialsChannel || !("send" in socialsChannel)) {
+    await interaction.editReply("❌ Could not find the socials channel.");
+    return;
+  }
 
-  interaction.editReply("Processing");
-  
-    // let progressInteraction: Interaction | null = null;
-    let progressPromise = Promise.resolve();
-  
-    const progressUpdater = async (content: string, done?: boolean) => {
-      // Create a new function that captures the current operation
-      const updateOperation = async () => {
-        try {
-          // Delete when done
-          // if (done && progressInteraction) {
-          //   await progressInteraction.editReply(content);
-          //   progressInteraction = null;
-          //   return;
-          // }
-  
-          // Edit if exists
-          if (interaction) {
-            await interaction.editReply(content);
-            return;
-          }
-        } catch (err) {
-          logger.error(err, "failed to send sns progress update message");
+  let progressPromise = Promise.resolve();
+  const progressUpdater = async (content: string, done?: boolean) => {
+    const updateOp = async () => {
+      try {
+        if (done) {
+          await interaction.editReply("✅ Done!");
+          return;
         }
-      };
-  
-      // Wait for previous operations to complete, then run this one
-      progressPromise = progressPromise.then(updateOperation);
-      return progressPromise;
-    };
-  
-    try {
-      for await (const postDatas of snsService(posts, progressUpdater)) {
-        for (const postData of postDatas) {
-          const platform = getPlatform(postData.postLink.metadata);
-  
-          // 1. Send images first
-          // 2. Get the links to images
-          // 3. Send the message with the links
-          const fileMsgs = platform.buildDiscordAttachments(postData); // need to change this
-  
-          const attachments: Attachment[] = [];
-  
-          for (const fileMsg of fileMsgs) {
-            const filesMsg = await interaction.channel.send(fileMsg);
-            attachments.push(...filesMsg.attachments.values());
-          }
-  
-          const links = attachments.map((attachment) => attachment.url);
-          const msgs = platform.buildDiscordMessages(postData, links);
-  
-          for (const postMsg of msgs) {
-            await msg.reply({
-              ...postMsg,
-              allowedMentions: { parse: [] },
-            });
-          }
-        }
+        await interaction.editReply(content);
+      } catch (err) {
+        logger.error(err, "Progress update failed");
       }
-    } catch (err) {
-      logger.error(err, "failed to process sns message");
-      let errMsg = "oops borked the download, pls try again!!";
-      errMsg += `\n\nError: ${err}\n`;
-  
-      if (!interaction.deferred) {
-          await interaction.reply({ content: errMsg });
-        } else {
-          await interaction.followUp({ content: errMsg });
-        }
+    };
+    progressPromise = progressPromise.then(updateOp);
+    return progressPromise;
+  };
+
+  try {
+    for await (const postDatas of snsService(posts, progressUpdater)) {
+      for (const postData of postDatas) {
+        await sendPostToChannel(socialsChannel as SendableChannels, postData, {
+          format: monitorsConfig.format,
+          template: monitorsConfig.template,
+        });
+      }
     }
-
+    await interaction.editReply("✅ Post sent to socials channel!");
+  } catch (err) {
+    logger.error(err, "/post command failed");
+    await interaction.followUp({
+      content: `❌ Error: ${String(err)}`,
+      ephemeral: true,
+    });
+  }
 }
-
 
 // ---------------------------------------------------------------------------
 // Main dispatcher
@@ -892,85 +760,6 @@ export async function handleInteraction(
         }
 
         await cmd.editReply({ content: "Panel embed refreshed." });
-        return;
-      }
-
-      if (group === "connections" && sub === "add") {
-        await cmd.deferReply({ ephemeral: true });
-
-        const type = cmd.options.getString("type", true) as MonitorsConfig["connections"][number]["type"];
-        const handle = cmd.options.getString("handle", true);
-        const cooldownSeconds = cmd.options.getInteger("cooldown_seconds", true);
-
-        const updated: MonitorsConfig = {
-          ...monitorsConfig,
-          connections: [...monitorsConfig.connections],
-        };
-
-        const idx = updated.connections.findIndex(
-          (c) => c.type === type && c.handle === handle,
-        );
-        if (idx >= 0) {
-          updated.connections[idx] = { ...updated.connections[idx], cooldown_seconds: cooldownSeconds };
-        } else {
-          updated.connections.push({ type, handle, cooldown_seconds: cooldownSeconds });
-        }
-
-        saveMonitorsConfig(monitorsConfigPath, updated);
-        const reloaded = reloadMonitorsConfig();
-        await sendMonitorLog(
-          client,
-          reloaded,
-          `Connection added/updated: \`${type}:${handle}\` by ${cmd.user.username}`,
-        );
-
-        if (!(await refreshPanelEmbed(client, reloaded, db))) {
-          await cmd.editReply({ content: "Connection saved. Run panel setup first to show buttons." });
-          return;
-        }
-
-        await cmd.editReply({ content: "Connection added/updated and panel refreshed." });
-        return;
-      }
-
-      if (group === "connections" && sub === "remove") {
-        await cmd.deferReply({ ephemeral: true });
-
-        const type = cmd.options.getString("type", true) as MonitorsConfig["connections"][number]["type"];
-        const handle = cmd.options.getString("handle", true);
-        const purgeDb = cmd.options.getBoolean("purge_db") ?? false;
-
-        const updated: MonitorsConfig = {
-          ...monitorsConfig,
-          connections: monitorsConfig.connections.filter(
-            (c) => !(c.type === type && c.handle === handle),
-          ),
-        };
-
-        saveMonitorsConfig(monitorsConfigPath, updated);
-        const reloaded = reloadMonitorsConfig();
-        await sendMonitorLog(
-          client,
-          reloaded,
-          `Connection removed: \`${type}:${handle}\` by ${cmd.user.username}`,
-        );
-
-        if (purgeDb) {
-          const connectionId = `${type}:${handle}`;
-          try {
-            purgeConnectionSeenPosts(connectionId);
-            purgeConnectionMeta(db, connectionId);
-          } catch (err) {
-            log.warn({ err, connectionId }, "Failed to purge seen_posts for connection");
-          }
-        }
-
-        if (!(await refreshPanelEmbed(client, reloaded, db))) {
-          await cmd.editReply({ content: "Connection removed. Run panel setup first to show buttons." });
-          return;
-        }
-
-        await cmd.editReply({ content: "Connection removed and panel refreshed." });
         return;
       }
 

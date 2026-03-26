@@ -29,62 +29,6 @@ export async function registerSlashCommands(
     )
     .addSubcommandGroup((group) =>
       group
-        .setName("connections")
-        .setDescription("Add/remove monitored connections")
-        .addSubcommand((sub) =>
-          sub
-            .setName("add")
-            .setDescription("Add or update a monitored connection")
-            .addStringOption((opt) =>
-              opt
-                .setName("type")
-                .setDescription("Connection type")
-                .setRequired(true)
-                .addChoices(
-                  { name: "Instagram", value: "instagram" },
-                  { name: "TikTok", value: "tiktok" },
-                  { name: "Twitter", value: "twitter" },
-                ),
-            )
-            .addStringOption((opt) =>
-              opt.setName("handle").setDescription("Handle/username").setRequired(true),
-            )
-            .addIntegerOption((opt) =>
-              opt
-                .setName("cooldown_seconds")
-                .setDescription("Cooldown between polls (seconds)")
-                .setRequired(true)
-                .setMinValue(0),
-            ),
-        )
-        .addSubcommand((sub) =>
-          sub
-            .setName("remove")
-            .setDescription("Remove a monitored connection")
-            .addStringOption((opt) =>
-              opt
-                .setName("type")
-                .setDescription("Connection type")
-                .setRequired(true)
-                .addChoices(
-                  { name: "Instagram", value: "instagram" },
-                  { name: "TikTok", value: "tiktok" },
-                  { name: "Twitter", value: "twitter" },
-                ),
-            )
-            .addStringOption((opt) =>
-              opt.setName("handle").setDescription("Handle/username").setRequired(true),
-            )
-            .addBooleanOption((opt) =>
-              opt
-                .setName("purge_db")
-                .setDescription("Also purge dedupe data for this connection")
-                .setRequired(false),
-            ),
-        ),
-    )
-    .addSubcommandGroup((group) =>
-      group
         .setName("db")
         .setDescription("Purge monitor DB data")
         .addSubcommand((sub) =>

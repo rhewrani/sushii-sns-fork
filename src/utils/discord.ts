@@ -1,7 +1,13 @@
 import dayjs from "dayjs";
 import timezone from "dayjs/plugin/timezone";
 import utc from "dayjs/plugin/utc";
-import { platformToString, type Platform } from "../platforms/base";
+import { platformToString, type AnySnsMetadata, type Platform, type PostData } from "../platforms/base";
+import {
+  AttachmentBuilder,
+  MessageFlags,
+  type SendableChannels,
+} from "discord.js";
+import { buildInlineFormatContent, buildLinksFormatMessages, suppressLinksInTextExceptLast } from "./template";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -64,4 +70,83 @@ export function chunkArray<T>(arr: T[], chunkSize: number): T[][] {
   }
 
   return chunks;
+}
+
+export interface SendPostOptions {
+  format: "inline" | "links";
+  template?: string;
+  /** Optional: prefix content (e.g., "Posted by @user") */
+  prefix?: string;
+  /** Optional: suppress embeds (default: true) */
+  suppressEmbeds?: boolean;
+}
+
+/**
+ * Send a PostData to a Discord channel using review-style formatting.
+ * Handles inline (text+attachments) and links (text+CDN URLs) formats.
+ * Automatically chunks attachments to respect Discord's 10-per-message limit.
+ */
+export async function sendPostToChannel(
+  channel: SendableChannels,
+  postData: PostData<AnySnsMetadata>,
+  options: SendPostOptions,
+): Promise<void> {
+  const { format, template, prefix, suppressEmbeds = true } = options;
+  const files = postData.files;
+  const flags = suppressEmbeds ? MessageFlags.SuppressEmbeds : undefined;
+
+  // Helper to send with optional prefix
+  const sendWithPrefix = async (content: string, extra?: Record<string, unknown>) => {
+    const finalContent = prefix ? `${prefix}\n${content}` : content;
+    await channel.send({
+      content: finalContent,
+      flags,
+      ...extra,
+    });
+  };
+
+  if (format === "inline") {
+    // === INLINE FORMAT: text + direct attachments ===
+    const content = buildInlineFormatContent(template ?? "", postData as any);
+    const attachments = files.map((f, i) =>
+      new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`)
+    );
+    const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
+
+    if (chunks.length === 0) {
+      // Text-only post
+      await sendWithPrefix(suppressLinksInTextExceptLast?.(content) ?? content);
+    } else {
+      // Send text first, then media chunks
+      await sendWithPrefix(content);
+      for (const chunk of chunks) {
+        await channel.send({ files: chunk, flags });
+      }
+    }
+  } else {
+    // === LINKS FORMAT: upload attachments → get CDN URLs → send text with URLs ===
+    const attachments = files.map((f, i) =>
+      new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`)
+    );
+    const chunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
+    const cdnUrls: string[] = [];
+
+    // Upload all media first to get Discord CDN URLs
+    for (const chunk of chunks) {
+      const sent = await channel.send({ files: chunk, flags });
+      for (const att of sent.attachments.values()) {
+        cdnUrls.push(att.url);
+      }
+    }
+
+    // Build and send formatted text messages with CDN URLs
+    const textMsgs = buildLinksFormatMessages(
+      template ?? "",
+      postData as any,
+      cdnUrls
+    );
+    for (const msg of textMsgs) {
+      await channel.send({ ...msg, flags });
+    }
+  }
 }
