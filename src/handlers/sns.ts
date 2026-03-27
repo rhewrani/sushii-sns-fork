@@ -1,5 +1,7 @@
 import { type Attachment, type Message } from "discord.js";
 import logger from "../logger";
+import type { ServerConfig } from "../config/server_config";
+import { getGuildTemplate } from "../config/server_config";
 import {
   SnsDownloader,
   type AnySnsMetadata,
@@ -59,7 +61,7 @@ async function* snsService(
   }
 }
 
-export async function snsHandler(msg: Message<true>): Promise<void> {
+export async function snsHandler(msg: Message<true>, serverConfig: ServerConfig | null): Promise<void> {
   if (!msg.channel.isSendable()) {
     return;
   }
@@ -154,7 +156,8 @@ export async function snsHandler(msg: Message<true>): Promise<void> {
         }
 
         const links = attachments.map((attachment) => attachment.url);
-        const msgs = platform.buildDiscordMessages(postData, links);
+        const template = getGuildTemplate(serverConfig, msg.guildId);
+        const msgs = platform.buildDiscordMessages(postData, links, template);
 
         for (const postMsg of msgs) {
           await msg.reply({

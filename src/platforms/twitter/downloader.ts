@@ -6,6 +6,7 @@ import {
 import logger from "../../logger";
 import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import { fetchWithHeaders, getFileExtFromURL } from "../../utils/http";
+import { buildLinksFormatMessages } from "../../utils/template";
 import type { TweetAPIResponse } from "./types";
 import {
   SnsDownloader,
@@ -137,7 +138,12 @@ export class TwitterDownloader extends SnsDownloader<TwitterMetadata> {
   buildDiscordMessages(
     postData: PostData<TwitterMetadata>,
     attachmentURLs: string[],
+    template?: string,
   ): MessageCreateOptions[] {
+    if (template) {
+      return buildLinksFormatMessages(template, postData, attachmentURLs);
+    }
+
     let msgs: MessageCreateOptions[] = [];
 
     // Formatted post

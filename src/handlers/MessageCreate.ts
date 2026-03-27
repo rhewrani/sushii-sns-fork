@@ -1,12 +1,16 @@
 import type { Message } from "discord.js";
 import config from "../config/config";
+import type { ServerConfig } from "../config/server_config";
 import logger from "../logger";
 import { extractLinksHandler } from "./links";
 import { snsHandler } from "./sns";
 
 const log = logger.child({ module: "MessageCreateHandler" });
 
-export async function MessageCreateHandler(msg: Message): Promise<void> {
+export async function MessageCreateHandler(
+  msg: Message,
+  serverConfig: ServerConfig | null,
+): Promise<void> {
   if (msg.author.bot) {
     return;
   }
@@ -25,5 +29,5 @@ export async function MessageCreateHandler(msg: Message): Promise<void> {
     msg.reply("pong").catch((err) => log.error(err, "Failed to reply pong"));
   }
 
-  await Promise.allSettled([extractLinksHandler(msg), snsHandler(msg)]);
+  await Promise.allSettled([extractLinksHandler(msg), snsHandler(msg, serverConfig)]);
 }
