@@ -24,6 +24,10 @@ export type ConnectionMeta = {
   last_fetched_by: string;
 };
 
+export type PostPostedCheck = 
+  | { wasPosted: false; messageId: null }
+  | { wasPosted: true; messageId: string };
+
 function runMigrations(db: Database, migrations: string[][]): void {
   const row = db.query("PRAGMA user_version").get() as { user_version: number };
   const currentVersion = row.user_version;
@@ -123,9 +127,9 @@ function openConnectionDb(connectionDbPath: string): Database {
   db.exec("PRAGMA journal_mode=WAL;");
   runMigrations(db, CONNECTION_MIGRATIONS);
   // Safety: same as metadata DB — ensure the required tables exist.
-  for (const migration of CONNECTION_MIGRATIONS) {
-    for (const sql of migration) db.exec(sql);
-  }
+  // for (const migration of CONNECTION_MIGRATIONS) {
+  //   for (const sql of migration) db.exec(sql);
+  // }
   return db;
 }
 
@@ -201,5 +205,103 @@ export function purgeAllSeenPosts(): void {
     const db = new Database(path, { create: true });
     db.exec("DELETE FROM seen_posts");
     db.close();
+  }
+}
+
+// === Posted Message ID Tracking ===
+
+/**
+ * Get the Discord message ID for a post that was sent to the socials channel.
+ * Returns null if the post was seen but never posted (e.g., rejected in review).
+ */
+export function getPostedMessageId(
+  connectionDb: Database,
+  postId: string,
+): string | null {
+  const row = connectionDb
+    .query<{ posted_message_id: string | null }, [string]>(
+      "SELECT posted_message_id FROM seen_posts WHERE post_id = ?",
+    )
+    .get(postId);
+  return row?.posted_message_id ?? null;
+}
+
+/**
+ * Record that a post was successfully sent to the socials channel.
+ * Upserts the posted_message_id for the given post_id.
+ */
+export function markPostPosted(
+  connectionDb: Database,
+  postId: string,
+  messageId: string,
+): void {
+  // First ensure the post is marked as seen (in case it wasn't)
+  connectionDb
+    .query(
+      "INSERT OR IGNORE INTO seen_posts (post_id, seen_at) VALUES (?, ?)",
+    )
+    .run(postId, Date.now());
+  
+  // Then update the posted_message_id
+  connectionDb
+    .query(
+      "UPDATE seen_posts SET posted_message_id = ? WHERE post_id = ?",
+    )
+    .run(messageId, postId);
+}
+
+/**
+ * Clear the posted_message_id for a post (e.g., if the message was deleted).
+ * Does NOT unmark the post as seen.
+ */
+export function clearPostedMessageId(
+  connectionDb: Database,
+  postId: string,
+): void {
+  connectionDb
+    .query(
+      "UPDATE seen_posts SET posted_message_id = NULL WHERE post_id = ?",
+    )
+    .run(postId);
+}
+
+/**
+ * Get all posts for a connection that have been posted (have a message ID).
+ * Useful for cleanup or audit operations.
+ */
+export function getPostedPosts(
+  connectionDb: Database,
+): Array<{ post_id: string; posted_message_id: string; seen_at: number }> {
+  return connectionDb
+    .query<
+      { post_id: string; posted_message_id: string; seen_at: number },
+      []
+    >(
+      "SELECT post_id, posted_message_id, seen_at FROM seen_posts WHERE posted_message_id IS NOT NULL",
+    )
+    .all();
+}
+
+/**
+ * Check if a post was already posted to the socials channel.
+ * Returns both the status and the existing message ID (if any).
+ */
+export function checkIfPostWasPosted(
+  connectionDb: Database,
+  postId: string,
+): PostPostedCheck {
+  const row = connectionDb
+    .query<{ posted_message_id: string | null }, [string]>(
+      "SELECT posted_message_id FROM seen_posts WHERE post_id = ?",
+    )
+    .get(postId);
+  
+  const messageId = row?.posted_message_id ?? null;
+  const wasPosted = messageId !== null;
+  
+  if (messageId !== null) {
+    return { wasPosted: true as const, messageId };
+  } else {
+    return { wasPosted: false as const, messageId: null };
   }
 }

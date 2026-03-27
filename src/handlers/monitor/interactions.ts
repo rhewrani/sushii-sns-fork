@@ -16,8 +16,11 @@ import {
   type SendableChannels,
   type StringSelectMenuInteraction,
   type MessageEditOptions,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
 } from "discord.js";
-import type { ServerConfig } from "../../config/server_config";
+import { isConnectionMonitored, type ServerConfig } from "../../config/server_config";
 import logger from "../../logger";
 import { chunkArray, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE, sendPostToChannel } from "../../utils/discord";
 import {
@@ -32,6 +35,8 @@ import {
   saveMonitorsConfig,
 } from "./config";
 import {
+  checkIfPostWasPosted,
+  getConnectionDb,
   getConnectionMeta,
   getPanelMessage,
   purgeAllConnectionMeta,
@@ -57,8 +62,13 @@ import {
   type ReviewState,
 } from "./review";
 import { findAllSnsLinks, getPlatform, snsService } from "../sns";
+import type { AnySnsMetadata, PostData } from "../../platforms/base";
 
 const log = logger.child({ module: "monitor/interactions" });
+
+export type ConfirmationResult =
+  | { confirmed: true }
+  | { confirmed: false; reason: "skipped" | "timeout" | "error" };
 
 // ---------------------------------------------------------------------------
 // Existing handlers
@@ -234,6 +244,65 @@ async function postAndPinPanelEmbed(
   }
 
   upsertPanelMessage(metadataDb, monitorsConfig.panel_channel_id, msg.id);
+}
+
+export async function promptRepostConfirmation(
+  interaction: ChatInputCommandInteraction,
+  postData: PostData<AnySnsMetadata>,
+  socialsChannelId: string,
+  existingMessageId: string | null,
+): Promise<ConfirmationResult> {
+  const existingPostLink = existingMessageId && interaction.guildId
+    ? `\nhttps://discord.com/channels/${interaction.guildId}/${socialsChannelId}/${existingMessageId}`
+    : "";
+
+  const confirmRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId("post_confirm_yes")
+      .setLabel("✅ Post Anyway")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId("post_confirm_no")
+      .setLabel("❌ Skip")
+      .setStyle(ButtonStyle.Danger),
+  );
+
+  const confirmMsg = await interaction.followUp({
+    content: `⚠️ This post was already sent to the socials channel.${existingPostLink}\n\nDo you want to post it again?`,
+    components: [confirmRow],
+    ephemeral: true,
+  });
+
+  try {
+    const confirmation = await confirmMsg.awaitMessageComponent({
+      componentType: ComponentType.Button,
+      filter: (i) => i.user.id === interaction.user.id,
+      time: 30_000, // 30 seconds
+    });
+
+    if (confirmation.customId === "post_confirm_no") {
+      await confirmMsg.edit({
+        content: "⏭️ Skipped.",
+        components: [],
+      });
+      return { confirmed: false, reason: "skipped" };
+    }
+
+    // User confirmed — proceed
+    await confirmMsg.edit({
+      content: "🔄 Posting again...",
+      components: [],
+    });
+    return { confirmed: true };
+
+  } catch (err) {
+    await confirmMsg.edit({
+      content: "⏰ Confirmation timed out — skipping post.",
+      components: [],
+    }).catch(() => { });
+
+    return { confirmed: false, reason: "timeout" };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +504,7 @@ async function handleReviewPost(
   enqueuePost(async () => {
     const filteredPostData = { ...state.postData, files: filteredFiles };
     let postedToSocials = false;
+    let result;
 
     try {
       const channel = await interaction.client.channels.fetch(state.socialsChannelId);
@@ -448,10 +518,20 @@ async function handleReviewPost(
         return;
       }
       const filteredPostData = { ...state.postData, files: filteredFiles };
-  
-      await sendPostToChannel(channel as SendableChannels, filteredPostData, {
+
+      const buildConnectionId = (platform: string, username: string) =>
+        `${platform.replace(/-story$/, "")}:${username}`;
+
+      const connectionId = buildConnectionId(
+        state.postData.postLink.metadata.platform,
+        state.postData.username
+      );
+
+      result = await sendPostToChannel(channel as SendableChannels, filteredPostData, {
         format: state.format as "inline" | "links",
         template: state.template,
+        connectionDb: getConnectionDb(connectionId),
+        postId: state.postData.postID,
       });
 
       postedToSocials = true;
@@ -487,7 +567,7 @@ async function handleReviewPost(
       try {
         const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
         await lastMsg.edit({
-          components: [new TextDisplayBuilder().setContent("✅ Posted")] as any,
+          components: [new TextDisplayBuilder().setContent(`✅ Posted! https://discord.com/channels/${interaction.guildId}/${state.socialsChannelId}/${result?.messageIds[0]}`)] as any,
         });
 
         setTimeout(async () => {
@@ -596,33 +676,43 @@ async function handlePostCommand(
     return;
   }
 
-  let progressPromise = Promise.resolve();
-  const progressUpdater = async (content: string, done?: boolean) => {
-    const updateOp = async () => {
-      try {
-        if (done) {
-          await interaction.editReply("✅ Done!");
+  try {
+    const postData = (await snsService(posts, async () => { }).next()).value?.[0];
+    if (!postData || !postData.postID) {
+      await interaction.editReply("❌ Could not fetch post content.");
+      return;
+    }
+
+    const platform = postData.postLink.metadata.platform;
+    const username = postData.username;
+    const normalizedPlatform = platform.replace(/-story$/, "");
+    const connectionId = `${normalizedPlatform}:${username}`;
+    const connectionExists = isConnectionMonitored(monitorsConfig, connectionId);
+
+    if (connectionExists) {
+      const connectionDb = getConnectionDb(connectionId);
+      const check = checkIfPostWasPosted(connectionDb, postData.postID);
+      if (check.wasPosted) {
+        const result: ConfirmationResult = await promptRepostConfirmation(interaction, postData, socialsChannel.id, check.messageId);
+        if (!result.confirmed) {
           return;
         }
-        await interaction.editReply(content);
-      } catch (err) {
-        logger.error(err, "Progress update failed");
-      }
-    };
-    progressPromise = progressPromise.then(updateOp);
-    return progressPromise;
-  };
-
-  try {
-    for await (const postDatas of snsService(posts, progressUpdater)) {
-      for (const postData of postDatas) {
-        await sendPostToChannel(socialsChannel as SendableChannels, postData, {
-          format: monitorsConfig.format,
-          template: monitorsConfig.template,
-        });
       }
     }
-    await interaction.editReply("✅ Post sent to socials channel!");
+
+    const result = await sendPostToChannel(socialsChannel as SendableChannels, postData, {
+      format: monitorsConfig.format,
+      template: monitorsConfig.template,
+      connectionDb: connectionExists ? getConnectionDb(connectionId) : undefined,
+      postId: connectionExists ? postData.postID : undefined,
+    });
+
+    const jumpLink = result.messageIds[0]
+      ? `\nhttps://discord.com/channels/${interaction.guildId}/${socialsChannel.id}/${result.messageIds[0]}`
+      : "";
+
+    await interaction.editReply(`✅ Post sent to socials channel!${jumpLink}`);
+
   } catch (err) {
     logger.error(err, "/post command failed");
     await interaction.followUp({

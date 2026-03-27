@@ -22,8 +22,8 @@ export class TwitterDownloader extends SnsDownloader<TwitterMetadata> {
 
   URL_REGEX = new RegExp(
     "https?://(?:(?:www|m|mobile)\\.)?" +
-      "(?:twitter\\.com|x\\.com)" +
-      "/(\\w+)/status/(\\d+)(/(?:photo|video)/\\d)?/?(?:\\?\\S+)?(?:#\\S+)?",
+    "(?:twitter\\.com|x\\.com)" +
+    "/(\\w+)/status/(\\d+)(/(?:photo|video)/\\d)?/?(?:\\?\\S+)?(?:#\\S+)?",
     // 'i' flag for case-insensitivity
     // 'g' flag for global search - makes String.match() exclude capture groups
     "ig",
@@ -82,13 +82,11 @@ export class TwitterDownloader extends SnsDownloader<TwitterMetadata> {
       throw new Error("Tweet not found: " + tweetRes.message);
     }
 
-    const media = tweetRes.tweet.media.all;
+    const media = tweetRes.tweet.media?.all ?? [];
 
-    if (!media) {
-      throw new Error("No media found in tweet");
-    }
-
-    const buffers = await this.downloadImages(media.map((m) => m.url));
+    const buffers = media.length > 0
+      ? await this.downloadImages(media.map((m) => m.url))
+      : [];
 
     const files = buffers.map((buf, i) => {
       return {
@@ -106,7 +104,7 @@ export class TwitterDownloader extends SnsDownloader<TwitterMetadata> {
         translatedText: tweetRes.tweet.translation?.text,
         translatedFromLang: tweetRes.tweet.translation?.source_lang_en,
         timestamp: new Date(tweetRes.tweet.created_timestamp * 1000),
-        files,
+        files, // ✅ Empty array for text-only posts — works with sendPostToChannel!
       },
     ];
   }
@@ -148,6 +146,12 @@ export class TwitterDownloader extends SnsDownloader<TwitterMetadata> {
       postData.timestamp,
     );
     mainPostContent += "\n";
+
+    // ✅ Add the tweet text/caption (this was missing!)
+    if (postData.originalText) {
+      mainPostContent += `${postData.originalText}\n\n`;
+    }
+
     mainPostContent += `<https://x.com/${postData.username}/status/${postData.postID}>`;
     mainPostContent += "\n";
 

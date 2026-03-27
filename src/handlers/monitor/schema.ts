@@ -25,4 +25,10 @@ export const CONNECTION_MIGRATIONS: string[][] = [
       seen_at INTEGER NOT NULL
     )`,
   ],
+  [
+    `
+    ALTER TABLE seen_posts 
+    ADD COLUMN posted_message_id TEXT;
+    `,
+  ],
 ];

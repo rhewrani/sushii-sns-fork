@@ -27,30 +27,50 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
   PLATFORM: Platform = "instagram-story";
 
   URL_REGEX = new RegExp(
-    /https?:\/\/(?:www\.)?instagram\.com\/([\w-]{3,})\/$/gi,
+    "https?://" +                        
+    "(?:www\\.)?" +                      
+    "instagram\\.com/" +                 
+    "stories/" +                         
+    "([\\w.-]+)" +                       
+    "/" +                                
+    "(\\d+)" +                           
+    "/?" +                               
+    "(?:\\?\\S*)?" +                     
+    "(?:#\\S*)?",                        
+    "gi"                                  
   );
 
   protected createLinkFromMatch(
     match: RegExpMatchArray,
   ): SnsLink<InstagramMetadata> {
+    const username = match[1];
+    const storyId = match[2];
+    
     return {
       url: match[0],
       metadata: {
         platform: "instagram-story",
-        username: match[1],
+        username,
+        shortcode: storyId, // just use but ist actually the story id
       },
     };
   }
 
   buildApiRequest(details: SnsLink<InstagramMetadata>): Request {
+    console.log("Link: ", "https://instagram.com/stories/" + details.metadata.username + "/" + details.metadata.shortcode);
     return new Request(
-      `https://instagram120.p.rapidapi.com/v1/stories?username_or_id_or_url=${encodeURIComponent(details.url)}`,
+      `https://instagram120.p.rapidapi.com/api/instagram/story`,
       {
-        method: "GET",
+        method: "POST",
         headers: {
+          "content-type": "application/json",
           "x-rapidapi-host": "instagram120.p.rapidapi.com",
           "x-rapidapi-key": process.env.RAPID_API_KEY!,
         },
+        body: JSON.stringify({
+          username: details.metadata.username,
+          storyId: details.metadata.shortcode,
+        }),
       },
     );
   }

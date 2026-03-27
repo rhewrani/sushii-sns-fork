@@ -422,7 +422,7 @@ async function fetchIgProfilePostsViaRapidApiLooter(
   let feedNodes: NormalizedFeedNode[];
 
   if (isDevMode()) {
-    const mock = loadMockJson<any>("instagram-post-rapidapi.json");
+    const mock = loadMockJson<any>("instagram-post-rapidapi-looter.json");
     feedNodes = parseRapidApiPostsResponseLooter(mock);
   } else {
     const req = new Request(

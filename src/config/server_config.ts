@@ -30,3 +30,16 @@ export function getGuildTemplate(
   const guild = config.guilds.find((g) => g.guild_id === guildId);
   return guild?.template;
 }
+
+/**
+ * Check if a connection is configured in monitorsConfig.
+ */
+export function isConnectionMonitored(
+  monitorsConfig: { connections: Array<{ type: string; handle: string }> },
+  connectionId: string,
+): boolean {
+  return monitorsConfig.connections.some((c) => {
+    const configPlatform = c.type.replace(/-story$/, "");
+    return `${configPlatform}:${c.handle}` === connectionId;
+  });
+}

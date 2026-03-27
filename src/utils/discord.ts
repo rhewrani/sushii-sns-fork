@@ -5,9 +5,13 @@ import { platformToString, type AnySnsMetadata, type Platform, type PostData } f
 import {
   AttachmentBuilder,
   MessageFlags,
+  type Message,
   type SendableChannels,
 } from "discord.js";
 import { buildInlineFormatContent, buildLinksFormatMessages, suppressLinksInTextExceptLast } from "./template";
+import logger from "../logger";
+
+const log = logger.child({ module: "utils/discord" });
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -79,30 +83,49 @@ export interface SendPostOptions {
   prefix?: string;
   /** Optional: suppress embeds (default: true) */
   suppressEmbeds?: boolean;
+  /** Optional: connection DB to auto-record posted message ID */
+  connectionDb?: { run: (sql: string, ...params: any[]) => any }; // minimal DB interface
+  /** Optional: post ID to track in DB (required if connectionDb provided) */
+  postId?: string;
+}
+
+export interface SendPostResult {
+  /** All message IDs that were sent (in order) */
+  messageIds: string[];
+  /** The full Message objects if you need to reference them immediately */
+  messages: Message[];
 }
 
 /**
  * Send a PostData to a Discord channel using review-style formatting.
  * Handles inline (text+attachments) and links (text+CDN URLs) formats.
  * Automatically chunks attachments to respect Discord's 10-per-message limit.
+ * 
+ * @returns Object with sent message IDs and Message objects for tracking
  */
 export async function sendPostToChannel(
   channel: SendableChannels,
   postData: PostData<AnySnsMetadata>,
   options: SendPostOptions,
-): Promise<void> {
-  const { format, template, prefix, suppressEmbeds = true } = options;
+): Promise<SendPostResult> {
+  const { format, template, prefix, suppressEmbeds = true, connectionDb, postId } = options;
   const files = postData.files;
-  const flags = suppressEmbeds ? MessageFlags.SuppressEmbeds : undefined;
+  const hasMedia = files.length > 0;
+  const flags = (suppressEmbeds && hasMedia) ? MessageFlags.SuppressEmbeds : undefined;
 
-  // Helper to send with optional prefix
-  const sendWithPrefix = async (content: string, extra?: Record<string, unknown>) => {
+  const result: SendPostResult = { messageIds: [], messages: [] };
+
+  // Helper to send with optional prefix and track result
+  const sendAndTrack = async (content: string, extra?: Record<string, unknown>) => {
     const finalContent = prefix ? `${prefix}\n${content}` : content;
-    await channel.send({
+    const sent = await channel.send({
       content: finalContent,
       flags,
       ...extra,
     });
+    result.messageIds.push(sent.id);
+    result.messages.push(sent);
+    return sent;
   };
 
   if (format === "inline") {
@@ -115,12 +138,16 @@ export async function sendPostToChannel(
 
     if (chunks.length === 0) {
       // Text-only post
-      await sendWithPrefix(suppressLinksInTextExceptLast?.(content) ?? content);
+      log.info(`Sending text-only post`);
+      await sendAndTrack(suppressLinksInTextExceptLast?.(content) ?? content);
     } else {
       // Send text first, then media chunks
-      await sendWithPrefix(content);
+      log.info(`Sending text + media chunks`);
+      await sendAndTrack(content);
       for (const chunk of chunks) {
-        await channel.send({ files: chunk, flags });
+        const sent = await channel.send({ files: chunk, flags });
+        result.messageIds.push(sent.id);
+        result.messages.push(sent);
       }
     }
   } else {
@@ -134,6 +161,8 @@ export async function sendPostToChannel(
     // Upload all media first to get Discord CDN URLs
     for (const chunk of chunks) {
       const sent = await channel.send({ files: chunk, flags });
+      result.messageIds.push(sent.id);
+      result.messages.push(sent);
       for (const att of sent.attachments.values()) {
         cdnUrls.push(att.url);
       }
@@ -146,7 +175,27 @@ export async function sendPostToChannel(
       cdnUrls
     );
     for (const msg of textMsgs) {
-      await channel.send({ ...msg, flags });
+      const sent = await channel.send({ ...msg, flags });
+      result.messageIds.push(sent.id);
+      result.messages.push(sent);
     }
   }
+
+  if (connectionDb && postId && result.messageIds.length > 0) {
+    try {
+      const rawPlatform = postData.postLink.metadata.platform;
+      const normalizedPlatform = rawPlatform.replace(/-story$/, "");
+      
+      // Use INSERT OR REPLACE to handle both new posts and previously-seen-but-not-posted
+      connectionDb.run(
+        "INSERT OR REPLACE INTO seen_posts (post_id, seen_at, posted_message_id) VALUES (?, ?, ?)",
+        postId,
+        Date.now(),
+        result.messageIds[0]
+      );
+    } catch (err) {
+      log.error(err, "Failed to track posted message ID in DB");
+    }
+  }
+  return result;
 }

@@ -45,6 +45,7 @@ export function getPlatform<M extends SnsMetadata>(
   return downloader;
 }
 
+
 export async function* snsService(
   snsLinks: SnsLink<AnySnsMetadata>[],
   processFn?: ProgressFn,
@@ -86,9 +87,7 @@ export async function snsHandler(msg: Message<true>): Promise<void> {
 
   const reaction_emojis = [
     "👍",
-    "<:jenniekek2:821808883810041876>",
-    "<a:aJennieMock:807147252673675275>",
-    "<a:aJennieLaugh:695359047775289364>",
+    "<:aLISA_star:1367498109801861211>",
   ];
 
   const reaction =
