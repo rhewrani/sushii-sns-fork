@@ -81,6 +81,7 @@ export const InstagramPostElementSchema = z.object({
   user_posted: z.string().optional(),
   description: z.string().optional(),
   error: z.string().optional().nullable(),
+  error_code: z.string().optional().nullable(),
   // num_comments: z.number().optional(),
   // date_posted: z.coerce.date().optional(),
   // likes: z.number().optional(),

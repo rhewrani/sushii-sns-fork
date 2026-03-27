@@ -87,6 +87,20 @@ export interface PostData<M extends SnsMetadata> {
 }
 
 // --------------------------------------------------------------------------
+
+/**
+ * Thrown when a post is unavailable (age-restricted, removed, private, etc.)
+ * rather than a transient API failure. Callers can catch this specifically
+ * to surface a clean user-facing message instead of a generic error.
+ */
+export class SnsUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SnsUnavailableError";
+  }
+}
+
+// --------------------------------------------------------------------------
 export type ProgressFn = (message: string, done?: boolean) => Promise<void>;
 
 export abstract class SnsDownloader<M extends SnsMetadata> {

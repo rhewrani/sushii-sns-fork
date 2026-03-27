@@ -13,6 +13,7 @@ import { convertHeicToJpeg } from "../../utils/heic";
 import { buildLinksFormatMessages } from "../../utils/template";
 import {
   SnsDownloader,
+  SnsUnavailableError,
   type File,
   type InstagramMetadata,
   type Platform,
@@ -150,7 +151,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
     log.debug({ response: igPost }, "Downloaded and parsed IG API response");
 
     if (igPost.error) {
-      throw new Error(`Instagram post unavailable: ${igPost.error}`);
+      throw new SnsUnavailableError(igPost.error);
     }
 
     const { urls: mediaUrls, thumbnailOnly } = extractMediaUrls(igPost);

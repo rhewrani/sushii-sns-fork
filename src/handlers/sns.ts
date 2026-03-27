@@ -4,6 +4,7 @@ import type { ServerConfig } from "../config/server_config";
 import { getGuildTemplate } from "../config/server_config";
 import {
   SnsDownloader,
+  SnsUnavailableError,
   type AnySnsMetadata,
   type PostData,
   type ProgressFn,
@@ -168,6 +169,11 @@ export async function snsHandler(msg: Message<true>, serverConfig: ServerConfig 
       }
     }
   } catch (err) {
+    if (err instanceof SnsUnavailableError) {
+      await msg.channel.send(`Post unavailable: ${err.message}`);
+      return;
+    }
+
     logger.error(err, "failed to process sns message");
     let errMsg = "oops borked the download, pls try again!!";
     errMsg += `\n\n<@150443906511667200> Error: ${err}\n`;
