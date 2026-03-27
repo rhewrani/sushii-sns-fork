@@ -5,7 +5,6 @@ import type { InstagramMetadata, PostData } from "../../platforms/base";
 // Custom ID prefixes (shared between embed.ts and interactions.ts)
 // ---------------------------------------------------------------------------
 export const MONITOR_FETCH_PREFIX = "monitor:fetch:";
-export const MONITOR_STATUS_PREFIX = "monitor:status:";
 export const REVIEW_REMOVE_PREFIX = "monitor:review:remove:";
 export const REVIEW_EDIT_PREFIX = "monitor:review:edit:";
 export const REVIEW_MODAL_PREFIX = "monitor:review:modal:";

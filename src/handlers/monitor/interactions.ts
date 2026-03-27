@@ -27,7 +27,6 @@ import {
 import type { MonitorsConfig } from "./config";
 import {
   findSubscriptionByChannel,
-  findSubscriptionByUsername,
 } from "./config";
 import { markPostSeen, getLastFetch, getMonitorMessage, upsertMonitorMessage } from "./db";
 import { buildStatusEmbed, buildReviewComponents } from "./embed";
@@ -37,7 +36,6 @@ import {
   updateReview,
   deleteReview,
   MONITOR_FETCH_PREFIX,
-  MONITOR_STATUS_PREFIX,
   REVIEW_REMOVE_PREFIX,
   REVIEW_EDIT_PREFIX,
   REVIEW_MODAL_PREFIX,
@@ -51,29 +49,6 @@ const log = logger.child({ module: "monitor/interactions" });
 // ---------------------------------------------------------------------------
 // Existing handlers
 // ---------------------------------------------------------------------------
-
-async function handleStatusButton(
-  interaction: ButtonInteraction,
-  igUsername: string,
-  monitorsConfig: MonitorsConfig,
-  db: Database,
-): Promise<void> {
-  await interaction.deferUpdate();
-
-  const subscription = findSubscriptionByUsername(monitorsConfig, igUsername);
-  if (!subscription) {
-    return;
-  }
-
-  const lastFetch = getLastFetch(db, igUsername);
-  const embedData = buildStatusEmbed(
-    igUsername,
-    subscription.fetch_cooldown_seconds,
-    lastFetch,
-  );
-
-  await interaction.message.edit(embedData);
-}
 
 async function handleMonitorEmbedCommand(
   interaction: ChatInputCommandInteraction,
@@ -110,13 +85,8 @@ async function handleMonitorEmbedCommand(
     return;
   }
 
-  const [subscription] = result;
   const lastFetch = getLastFetch(db, igUsername);
-  const embedData = buildStatusEmbed(
-    igUsername,
-    subscription.fetch_cooldown_seconds,
-    lastFetch,
-  );
+  const embedData = buildStatusEmbed(igUsername, lastFetch);
 
   // Check if there's an existing embed message
   const stored = getMonitorMessage(db, igUsername, interaction.channelId);
@@ -127,7 +97,7 @@ async function handleMonitorEmbedCommand(
       const channel = interaction.channel;
       if (channel) {
         const existingMsg = await channel.messages.fetch(stored.message_id);
-        await existingMsg.edit(embedData);
+        await existingMsg.edit({ ...embedData, embeds: [] } as any);
         await interaction.reply({ content: "Monitor embed updated.", ephemeral: true });
         return;
       }
@@ -458,12 +428,6 @@ export async function handleInteraction(
 
       if (customId.startsWith(MONITOR_FETCH_PREFIX)) {
         await fetchAndPost(interaction, client, monitorsConfig, serverConfig, db);
-        return;
-      }
-
-      if (customId.startsWith(MONITOR_STATUS_PREFIX)) {
-        const igUsername = customId.slice(MONITOR_STATUS_PREFIX.length);
-        await handleStatusButton(interaction, igUsername, monitorsConfig, db);
         return;
       }
 

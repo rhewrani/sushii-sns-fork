@@ -1,6 +1,8 @@
 import { readFileSync } from "fs";
 import { z } from "zod";
 
+export const FETCH_COOLDOWN_SECONDS = 30;
+
 export const WatcherSchema = z.object({
   guild_id: z.string(),
   channel_id: z.string(),
@@ -11,7 +13,6 @@ export const WatcherSchema = z.object({
 
 export const SubscriptionSchema = z.object({
   ig_username: z.string(),
-  fetch_cooldown_seconds: z.number(),
   watchers: z.array(WatcherSchema),
 });
 

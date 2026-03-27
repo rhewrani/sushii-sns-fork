@@ -3,7 +3,6 @@ import {
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
-  EmbedBuilder,
   MediaGalleryBuilder,
   MediaGalleryItemBuilder,
   MessageFlags,
@@ -13,10 +12,10 @@ import {
   type MessageCreateOptions,
 } from "discord.js";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
+import { FETCH_COOLDOWN_SECONDS } from "./config";
 import type { LastFetch } from "./db";
 import {
   MONITOR_FETCH_PREFIX,
-  MONITOR_STATUS_PREFIX,
   REVIEW_EDIT_PREFIX,
   REVIEW_POST_PREFIX,
   REVIEW_REMOVE_PREFIX,
@@ -26,36 +25,26 @@ import {
 
 export function buildStatusEmbed(
   igUsername: string,
-  cooldownSeconds: number,
   lastFetch: LastFetch | null,
-): Pick<MessageCreateOptions, "embeds" | "components"> {
+): Pick<MessageCreateOptions, "flags" | "components"> {
   const now = Math.floor(Date.now() / 1000);
 
-  let lastFetchedValue: string;
-  let nextFetchValue: string;
+  let lastFetchedText: string;
 
   if (lastFetch) {
     const lastFetchedSec = Math.floor(lastFetch.last_fetched_at / 1000);
-    lastFetchedValue = `<t:${lastFetchedSec}:R> by ${lastFetch.last_fetched_by}`;
-
-    const nextFetchSec = lastFetchedSec + cooldownSeconds;
-    if (now >= nextFetchSec) {
-      nextFetchValue = "Now";
-    } else {
-      nextFetchValue = `<t:${nextFetchSec}:R>`;
-    }
+    lastFetchedText = `<t:${lastFetchedSec}:R> by ${lastFetch.last_fetched_by}`;
   } else {
-    lastFetchedValue = "Never";
-    nextFetchValue = "Now";
+    lastFetchedText = "Never";
   }
 
-  const embed = new EmbedBuilder()
-    .setColor(0xe1306c)
-    .setTitle(`📸 Instagram Monitor: @${igUsername}`)
-    .addFields(
-      { name: "Last fetched", value: lastFetchedValue, inline: true },
-      { name: "Next fetch available", value: nextFetchValue, inline: true },
-    );
+  const header = new TextDisplayBuilder().setContent(
+    `📸 **Instagram Monitor: @${igUsername}**`,
+  );
+
+  const status = new TextDisplayBuilder().setContent(
+    `**Last fetched:** ${lastFetchedText}`,
+  );
 
   const fetchButton = new ButtonBuilder()
     .setCustomId(`${MONITOR_FETCH_PREFIX}${igUsername}`)
@@ -63,20 +52,11 @@ export function buildStatusEmbed(
     .setEmoji("📥")
     .setStyle(ButtonStyle.Primary);
 
-  const statusButton = new ButtonBuilder()
-    .setCustomId(`${MONITOR_STATUS_PREFIX}${igUsername}`)
-    .setLabel("Status")
-    .setEmoji("ℹ️")
-    .setStyle(ButtonStyle.Secondary);
-
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    fetchButton,
-    statusButton,
-  );
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(fetchButton);
 
   return {
-    embeds: [embed],
-    components: [row],
+    flags: MessageFlags.IsComponentsV2,
+    components: [header, status, row] as MessageCreateOptions["components"],
   };
 }
 
