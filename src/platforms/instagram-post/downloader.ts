@@ -1,4 +1,6 @@
-import { sleep } from "bun";
+import {
+  sleep,
+} from "bun";
 import {
   AttachmentBuilder,
   MessageFlags,
@@ -20,14 +22,15 @@ import {
 } from "../base";
 import {
   BdMonitorResponseSchema,
-  BdTriggerResponseSchema,
-  type BdMonitorResponse,
-  type BdTriggerResponse,
+  BdScrapeResponseSchema,
   InstagramPostListSchema,
   type InstagramPostElement,
 } from "./types";
 
 const log = logger.child({ module: "InstagramPostDownloader" });
+
+const BD_SCRAPE_URL =
+  "https://api.brightdata.com/datasets/v3/scrape?dataset_id=gd_lk5ns7kz21pck8jpis&notify=false&include_errors=true";
 
 export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
   PLATFORM: Platform = "instagram";
@@ -48,269 +51,124 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
   }
 
   buildApiRequest(details: SnsLink<InstagramMetadata>): Request {
-    return new Request(
-      "https://api.brightdata.com/datasets/v3/trigger?dataset_id=gd_lk5ns7kz21pck8jpis&include_errors=true",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.BD_API_TOKEN!}`,
-        },
-        body: JSON.stringify([{ url: details.url }]),
+    return new Request(BD_SCRAPE_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.BD_API_TOKEN!}`,
       },
-    );
+      body: JSON.stringify({ input: [{ url: details.url }] }),
+    });
   }
 
-  async waitUntilDataReady(snapshotID: string, timeoutMs = 30_000): Promise<void> {
-    const req = new Request(
-      `https://api.brightdata.com/datasets/v3/progress/${snapshotID}`,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.BD_API_TOKEN!}`,
-        },
-      },
-    );
+  /**
+   * Poll /progress until the snapshot is ready, then fetch /snapshot.
+   * Used when /scrape returns 202.
+   */
+  async waitAndFetch(snapshotId: string, timeoutMs = 60_000): Promise<InstagramPostElement[]> {
+    const cancelAt = Date.now() + timeoutMs;
 
-    let cancelAt = Date.now() + timeoutMs;
-
-    let resParsed: BdMonitorResponse;
+    // Poll progress
     while (true) {
-      const res = await fetch(req);
-
-      // Might be too fast, retry at least 5 times
-      if (res.status === 404) {
-        if (Date.now() > cancelAt) {
-          log.error(
-            {
-              requestURL: res.url,
-              responseCode: res.status,
-              responseBody: await res.text(),
-            },
-            "Failed to fetch ig API snapshot response",
-          );
-
-          throw new Error("Failed to fetch ig API response within 30 seconds");
-        }
-
-        // Wait a bit
-        await sleep(500);
-
-        continue;
-      }
-
-      if (res.status !== 200) {
-        log.error(
-          {
-            responseCode: res.status,
-            responseBody: await res.text(),
-          },
-          "Failed to fetch ig API snapshot response",
-        );
-
-        throw new Error(`Failed to fetch ig API response: ${res.status}`);
-      }
-
-      const resJson = await res.json();
-
-      resParsed = BdMonitorResponseSchema.parse(resJson);
-      if (resParsed.status === "failed") {
-        log.error(
-          {
-            resParsed,
-          },
-          "IG API failed to process the post",
-        );
-
-        throw new Error("IG API failed to process the post");
-      }
-
-      // Done, break loop
-      if (resParsed.status === "ready") {
-        break;
-      }
-
-      // Still processing ("starting" / "running") — wait before retrying
-      if (Date.now() > cancelAt) {
-        throw new Error("IG API timed out waiting for snapshot to be ready");
-      }
-
-      await sleep(1000);
-    }
-  }
-
-  async fetchAllSnapshotData(snapshotID: string): Promise<InstagramPostElement[]> {
-    // 5 retries
-    for (let i = 0; i < 5; i++) {
-      const req = new Request(
-        `https://api.brightdata.com/datasets/v3/snapshot/${snapshotID}?format=json`,
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.BD_API_TOKEN!}`,
-          },
-        },
+      const res = await fetch(
+        `https://api.brightdata.com/datasets/v3/progress/${snapshotId}`,
+        { headers: { Authorization: `Bearer ${process.env.BD_API_TOKEN!}` } },
       );
 
-      const response = await fetch(req);
-
-      // Might be too fast, "Snapshot is building, try again in 30s"
-      if (response.status === 202) {
-        log.debug(
-          {
-            requestURL: req.url,
-            responseCode: response.status,
-            responseBody: await response.text(),
-          },
-          "IG API snapshot is still building",
-        );
-
-        // Retry in 3 seconds
-        await sleep(3 * 1000);
+      if (res.status === 404 || res.status !== 200) {
+        if (Date.now() > cancelAt) throw new Error("IG API timed out waiting for snapshot");
+        await sleep(1000);
         continue;
       }
 
-      if (response.status !== 200) {
-        log.error(
-          {
-            responseCode: response.status,
-            responseBody: await response.text(),
-          },
-          "Failed to fetch ig API snapshot response",
-        );
+      const progress = BdMonitorResponseSchema.parse(await res.json());
+      if (progress.status === "failed") throw new Error("IG API failed to process the post");
+      if (progress.status === "ready") break;
 
-        await sleep(3 * 1000);
+      if (Date.now() > cancelAt) throw new Error("IG API timed out waiting for snapshot");
+      await sleep(1000);
+    }
+
+    // Fetch snapshot data
+    for (let i = 0; i < 5; i++) {
+      const res = await fetch(
+        `https://api.brightdata.com/datasets/v3/snapshot/${snapshotId}?format=json`,
+        { headers: { Authorization: `Bearer ${process.env.BD_API_TOKEN!}` } },
+      );
+
+      if (res.status === 202) {
+        await sleep(3000);
         continue;
       }
 
-      try {
-        const rawJson = await response.json();
-        return InstagramPostListSchema.parse(rawJson);
-      } catch (err) {
-        log.error(
-          {
-            err,
-            response,
-            responseCode: response.status,
-          },
-          "Failed to parse ig API snapshot response",
-        );
-
-        throw err;
+      if (!res.ok) {
+        log.error({ responseCode: res.status, responseBody: await res.text() }, "Failed to fetch IG snapshot");
+        await sleep(3000);
+        continue;
       }
+
+      return InstagramPostListSchema.parse(await res.json());
     }
 
-    throw new Error("Failed to fetch ig API response after 5 tries");
-  }
-
-  async fetchSnapshotData(snapshotID: string): Promise<InstagramPostElement> {
-    const posts = await this.fetchAllSnapshotData(snapshotID);
-    if (posts.length === 0) {
-      throw new Error("No Instagram posts found");
-    }
-    return posts[0];
+    throw new Error("Failed to fetch IG snapshot after 5 tries");
   }
 
   async fetchContent(
     snsLink: SnsLink<InstagramMetadata>,
     progressCallback?: ProgressFn,
   ): Promise<PostData<InstagramMetadata>[]> {
+    progressCallback?.("Downloading images...");
+
     const req = this.buildApiRequest(snsLink);
     const response = await fetch(req);
 
-    if (response.status !== 200) {
-      log.error(
-        {
-          request: req.headers,
-          responseCode: response.status,
-          responseBody: await response.text(),
-        },
-        "Failed to fetch ig API response",
-      );
+    let posts: InstagramPostElement[];
 
-      throw new Error("Failed to fetch ig API response");
-    }
-
-    let triggerResponse: BdTriggerResponse;
-    try {
+    if (response.status === 200) {
+      // Synchronous response — single URL input returns an object, multiple returns an array
       const rawJson = await response.json();
+      const arr = Array.isArray(rawJson) ? rawJson : [rawJson];
+      posts = InstagramPostListSchema.parse(arr);
+    } else if (response.status === 202) {
+      // Async response — poll until ready
+      const body = BdScrapeResponseSchema.parse(await response.json());
+      if (!body.snapshot_id) throw new Error("No snapshot_id in 202 response");
 
-      // Throws if invalid
-      triggerResponse = BdTriggerResponseSchema.parse(rawJson);
-    } catch (err) {
-      log.error(
-        {
-          err,
-          response,
-          responseCode: response.status,
-        },
-        "Failed to parse ig trigger API response",
+      log.debug({ snapshotId: body.snapshot_id }, "IG scrape async, polling...");
+      progressCallback?.("Waiting for IG data...");
+      posts = await this.waitAndFetch(body.snapshot_id);
+    } else {
+      log.error({ responseCode: response.status, responseBody: await response.text() }, "Failed to fetch ig API response");
+      throw new Error(`Failed to fetch ig API response: ${response.status}`);
+    }
+
+    if (posts.length === 0) {
+      throw new Error("No Instagram posts found");
+    }
+
+    const igPost = posts[0];
+    log.debug({ response: igPost }, "Downloaded and parsed IG API response");
+
+    if (igPost.error) {
+      throw new Error(`Instagram post unavailable: ${igPost.error}`);
+    }
+
+    const { urls: mediaUrls, thumbnailOnly } = extractMediaUrls(igPost);
+    if (mediaUrls.length === 0) {
+      throw new Error(
+        "No media found for this Instagram post — Brightdata did not return image/video URLs. Try again or download manually.",
       );
-
-      throw new Error("Failed to parse ig JSON response");
     }
 
-    if (!triggerResponse.snapshot_id) {
-      throw new Error("Instagram snapshot ID not found");
-    }
-
-    // --------------------------------------------------------------------------
-    // Wait for process trigger and download the data
-
-    progressCallback?.("Waiting for IG data...");
-    log.debug(
-      {
-        snapshotID: triggerResponse.snapshot_id,
-      },
-      "Waiting for IG API to process the post",
-    );
-    await this.waitUntilDataReady(triggerResponse.snapshot_id);
-
-    log.debug(
-      {
-        snapshotID: triggerResponse.snapshot_id,
-      },
-      "IG API processed the post, downloading data...",
-    );
-
-    progressCallback?.("Downloading images...");
-
-    const igPost = await this.fetchSnapshotData(triggerResponse.snapshot_id);
-
-    log.debug(
-      {
-        response: igPost,
-      },
-      "Downloaded and parsed IG API response",
-    );
-
-    if (!igPost.post_content) {
-      throw new Error("Instagram post content not found");
-    }
-
-    if (igPost.post_content.length === 0) {
-      throw new Error("No Instagram post content found");
-    }
-
-    const mediaUrls = igPost.post_content
-      .map((m) => m.url)
-      .filter((x): x is string => !!x);
-
-    log.debug(
-      {
-        mediaUrls: mediaUrls.length,
-      },
-      "Downloading media URLs",
-    );
+    log.debug({ mediaUrls: mediaUrls.length }, "Downloading media URLs");
 
     const buffers = await this.downloadImages(mediaUrls);
 
-    let files = buffers.map((buf, i): File => {
-      return {
-        ext: getFileExtFromURL(mediaUrls![i]),
-        buffer: buf,
-      };
-    });
+    let files = buffers.map((buf, i): File => ({
+      ext: getFileExtFromURL(mediaUrls[i]),
+      buffer: buf,
+    }));
 
-    // Check if any heic files, convert to jpg
     files = await convertHeicToJpeg(files);
 
     progressCallback?.("Downloaded!", true);
@@ -326,11 +184,11 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
         originalText: igPost.description || "",
         timestamp: igPost.timestamp,
         files,
+        thumbnailOnly,
       },
     ];
   }
 
-  // Needs to be separate so we can get the Discord attachment URLs
   buildDiscordAttachments(
     postData: PostData<InstagramMetadata>,
   ): MessageCreateOptions[] {
@@ -340,18 +198,12 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
       ),
     );
 
-    // Groups of 10
-    const attachmentsChunks = chunkArray(
-      attachments,
-      MAX_ATTACHMENTS_PER_MESSAGE,
-    );
+    const attachmentsChunks = chunkArray(attachments, MAX_ATTACHMENTS_PER_MESSAGE);
 
-    return attachmentsChunks.map((chunk) => {
-      return {
-        content: "",
-        files: chunk,
-      };
-    });
+    return attachmentsChunks.map((chunk) => ({
+      content: "",
+      files: chunk,
+    }));
   }
 
   buildDiscordMessages(
@@ -363,31 +215,64 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
       return buildLinksFormatMessages(template, postData, attachmentURLs);
     }
 
-    let msgs: MessageCreateOptions[] = [];
-
     let mainPostContent = "";
-    mainPostContent += formatDiscordTitle(
-      "instagram",
-      postData.username,
-      postData.timestamp,
-    );
+    if (postData.thumbnailOnly) {
+      mainPostContent += "⚠️ Only a cropped square thumbnail was available for this post (Brightdata limitation for single-image posts). The full image may be cut off.\n";
+    }
+    mainPostContent += formatDiscordTitle("instagram", postData.username, postData.timestamp);
     mainPostContent += "\n";
     mainPostContent += `<${postData.postLink.url}>`;
     mainPostContent += "\n";
 
-    // Image URLs can be span multiple messages
-    const msgChunkContents = itemsToMessageContents(
-      mainPostContent,
-      attachmentURLs,
-    );
+    const msgChunkContents = itemsToMessageContents(mainPostContent, attachmentURLs);
 
-    const msgChunks: MessageCreateOptions[] = msgChunkContents.map((chunk) => ({
+    return msgChunkContents.map((chunk) => ({
       content: chunk,
-      // Prevent embeds
       flags: MessageFlags.SuppressEmbeds,
     }));
-
-    msgs.push(...msgChunks);
-    return msgs;
   }
+}
+
+/**
+ * Extract media URLs from an Instagram post element.
+ * Prefers post_content; falls back to top-level videos/images arrays
+ * (Brightdata changed format — post_content is now empty, media is in videos/images).
+ */
+export type ExtractedMedia = {
+  urls: string[];
+  thumbnailOnly: boolean;
+};
+
+export function extractMediaUrls(igPost: InstagramPostElement): ExtractedMedia {
+  // post_content: structured array with type+url (most reliable, preserves order)
+  if (igPost.post_content && igPost.post_content.length > 0) {
+    const urls = igPost.post_content.map((m) => m.url).filter((x): x is string => !!x);
+    if (urls.length > 0) return { urls, thumbnailOnly: false };
+  }
+
+  // photos: flat string array for image posts
+  if (igPost.photos && igPost.photos.length > 0) {
+    const urls = igPost.photos.filter((x): x is string => !!x);
+    if (urls.length > 0) return { urls, thumbnailOnly: false };
+  }
+
+  // videos: flat string array for video posts
+  if (igPost.videos && igPost.videos.length > 0) {
+    const urls = igPost.videos.filter((x): x is string => !!x);
+    if (urls.length > 0) return { urls, thumbnailOnly: false };
+  }
+
+  // images: array of objects (may duplicate post_content but useful as fallback)
+  if (igPost.images && igPost.images.length > 0) {
+    const urls = igPost.images.map((m) => m.url).filter((x): x is string => !!x);
+    if (urls.length > 0) return { urls, thumbnailOnly: false };
+  }
+
+  // Last resort: thumbnail — Brightdata only returns a square-cropped 1080px version
+  // for single-image feed posts. Flag it so callers can warn the user.
+  if (igPost.thumbnail) {
+    return { urls: [igPost.thumbnail], thumbnailOnly: true };
+  }
+
+  return { urls: [], thumbnailOnly: false };
 }

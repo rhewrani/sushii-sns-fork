@@ -7,6 +7,13 @@ export const BdTriggerResponseSchema = z.object({
 
 export type BdTriggerResponse = z.infer<typeof BdTriggerResponseSchema>;
 
+export const BdScrapeResponseSchema = z.object({
+  snapshot_id: z.string().optional(),
+  status: z.string().optional(),
+  message: z.string().optional(),
+});
+export type BdScrapeResponse = z.infer<typeof BdScrapeResponseSchema>;
+
 export const BdMonitorStatus = z.enum(["starting", "running", "ready", "failed"]);
 
 export const BdMonitorResponseSchema = z.object({
@@ -73,6 +80,7 @@ export const InstagramPostElementSchema = z.object({
   url: z.string().optional(),
   user_posted: z.string().optional(),
   description: z.string().optional(),
+  error: z.string().optional().nullable(),
   // num_comments: z.number().optional(),
   // date_posted: z.coerce.date().optional(),
   // likes: z.number().optional(),
@@ -95,6 +103,13 @@ export const InstagramPostElementSchema = z.object({
   // partnership_details: PartnershipDetailsSchema.optional(),
   // user_posted_id: z.string().optional(),
   post_content: z.array(PostContentSchema).optional(),
+  // photos: flat array of image URL strings
+  photos: z.array(z.string()).optional().nullable(),
+  // videos: flat array of video URL strings
+  videos: z.array(z.string()).optional().nullable(),
+  // images: array of objects with id+url (different from photos)
+  images: z.array(z.object({ id: z.string().optional(), url: z.string().optional() })).optional().nullable(),
+  thumbnail: z.string().optional().nullable(),
   // audio: AudioSchema.optional(),
   // profile_url: z.string().optional(),
   timestamp: z.coerce.date().optional(),

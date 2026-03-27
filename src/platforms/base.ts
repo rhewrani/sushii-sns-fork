@@ -82,6 +82,8 @@ export interface PostData<M extends SnsMetadata> {
   translatedFromLang?: string;
   timestamp?: Date;
   files: File[];
+  /** True when only a square-cropped thumbnail was available (Brightdata limitation for single-image posts) */
+  thumbnailOnly?: boolean;
 }
 
 // --------------------------------------------------------------------------
@@ -102,7 +104,7 @@ export abstract class SnsDownloader<M extends SnsMetadata> {
    * @returns Array of platform-specific post details
    */
   findUrls(content: string): SnsLink<M>[] {
-    const matches = content.matchAll(this.URL_REGEX) ?? [];
+    const matches = content.matchAll(this.URL_REGEX);
     const results: SnsLink<M>[] = [];
 
     for (const match of matches) {
@@ -146,10 +148,12 @@ export abstract class SnsDownloader<M extends SnsMetadata> {
 
   /**
    * Build a Discord message using the fetched content and images.
+   * If template is provided, it overrides the default message format.
    */
   abstract buildDiscordMessages(
     postData: PostData<M>,
     attachmentURLs: string[],
+    template?: string,
   ): MessageCreateOptions[];
 
   /**

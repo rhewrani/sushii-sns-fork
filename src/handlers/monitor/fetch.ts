@@ -11,9 +11,13 @@ import config from "../../config/config";
 import type { ServerConfig } from "../../config/server_config";
 import { getGuildTemplate } from "../../config/server_config";
 import logger from "../../logger";
-import { InstagramPostDownloader } from "../../platforms/instagram-post/downloader";
 import {
-  BdTriggerResponseSchema,
+  InstagramPostDownloader,
+  extractMediaUrls,
+} from "../../platforms/instagram-post/downloader";
+import {
+  BdScrapeResponseSchema,
+  InstagramPostListSchema,
   type InstagramPostElement,
 } from "../../platforms/instagram-post/types";
 import type { InstagramMetadata, PostData } from "../../platforms/base";
@@ -27,6 +31,7 @@ import {
 import type { MonitorsConfig, Subscription } from "./config";
 import {
   findSubscriptionByChannel,
+  FETCH_COOLDOWN_SECONDS,
 } from "./config";
 import {
   getLastFetch,
@@ -39,53 +44,49 @@ import { createReview, deleteReview, type ChannelConfig } from "./review";
 
 const log = logger.child({ module: "monitor/fetch" });
 
+const BD_SCRAPE_URL =
+  "https://api.brightdata.com/datasets/v3/scrape?dataset_id=gd_lk5ns7kz21pck8jpis&notify=false&include_errors=true";
+
 const downloader = new InstagramPostDownloader();
 
 // Guard against concurrent fetches for the same username (double-click race condition)
 const fetchingInProgress = new Set<string>();
 
 /**
- * Fetch all posts for an Instagram profile via the Brightdata API.
- * Uses the same dataset ID as the post downloader but with a profile URL payload.
+ * Fetch all posts for an Instagram profile via the Brightdata scrape API.
+ * Handles both synchronous (200) and asynchronous (202) responses.
  */
 export async function fetchIgProfilePosts(
   igUsername: string,
 ): Promise<InstagramPostElement[]> {
   const profileUrl = `https://www.instagram.com/${igUsername}/`;
 
-  const triggerReq = new Request(
-    "https://api.brightdata.com/datasets/v3/trigger?dataset_id=gd_lk5ns7kz21pck8jpis&include_errors=true",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.BD_API_TOKEN}`,
-      },
-      body: JSON.stringify([{ url: profileUrl }]),
+  const req = new Request(BD_SCRAPE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.BD_API_TOKEN}`,
     },
-  );
+    body: JSON.stringify({ input: [{ url: profileUrl }] }),
+  });
 
-  const triggerRes = await fetch(triggerReq);
-  if (triggerRes.status !== 200) {
-    throw new Error(
-      `Failed to trigger IG profile fetch: ${triggerRes.status}`,
-    );
+  const res = await fetch(req);
+
+  if (res.status === 200) {
+    const rawJson = await res.json();
+    const arr = Array.isArray(rawJson) ? rawJson : [rawJson];
+    return InstagramPostListSchema.parse(arr);
   }
 
-  const triggerJson = await triggerRes.json();
-  const triggerParsed = BdTriggerResponseSchema.parse(triggerJson);
-
-  if (!triggerParsed.snapshot_id) {
-    throw new Error("No snapshot_id in trigger response");
+  if (res.status === 202) {
+    const body = BdScrapeResponseSchema.parse(await res.json());
+    if (!body.snapshot_id) throw new Error("No snapshot_id in 202 response");
+    log.debug({ igUsername, snapshotId: body.snapshot_id }, "IG profile scrape async, polling...");
+    // Profile scrapes can return many posts, allow longer timeout
+    return downloader.waitAndFetch(body.snapshot_id, 120_000);
   }
 
-  const snapshotId = triggerParsed.snapshot_id;
-
-  log.debug({ igUsername, snapshotId }, "Waiting for IG profile snapshot");
-  // Profile scrapes return multiple posts and take longer than single-post scrapes
-  await downloader.waitUntilDataReady(snapshotId, 120_000);
-
-  return downloader.fetchAllSnapshotData(snapshotId);
+  throw new Error(`Failed to fetch IG profile posts: ${res.status}`);
 }
 
 /**
@@ -96,15 +97,7 @@ async function buildPostData(
   igPost: InstagramPostElement,
   igUsername: string,
 ): Promise<PostData<InstagramMetadata> | null> {
-  if (!igPost.post_content || igPost.post_content.length === 0) {
-    log.warn({ igPost }, "IG post has no content, skipping");
-    return null;
-  }
-
-  const mediaUrls = igPost.post_content
-    .map((m) => m.url)
-    .filter((x): x is string => !!x);
-
+  const { urls: mediaUrls } = extractMediaUrls(igPost);
   if (mediaUrls.length === 0) {
     log.warn({ igPost }, "IG post has no media URLs, skipping");
     return null;
@@ -163,12 +156,8 @@ export async function updateAllEmbeds(
       if (!channel || !channel.isTextBased()) continue;
 
       const msg = await channel.messages.fetch(stored.message_id);
-      const embedData = buildStatusEmbed(
-        igUsername,
-        subscription.fetch_cooldown_seconds,
-        lastFetch,
-      );
-      await msg.edit(embedData);
+      const embedData = buildStatusEmbed(igUsername, lastFetch);
+      await msg.edit({ ...embedData, embeds: [] } as any);
     } catch (err) {
       if (err instanceof DiscordAPIError && err.code === 10008) {
         log.warn(
@@ -234,7 +223,7 @@ export async function fetchAndPost(
   const lastFetch = getLastFetch(db, igUsername);
   if (lastFetch) {
     const nextFetchAt =
-      lastFetch.last_fetched_at + subscription.fetch_cooldown_seconds * 1000;
+      lastFetch.last_fetched_at + FETCH_COOLDOWN_SECONDS * 1000;
     if (Date.now() < nextFetchAt) {
       const nextFetchSec = Math.floor(nextFetchAt / 1000);
       await interaction.editReply(
