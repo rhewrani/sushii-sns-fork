@@ -1,4 +1,4 @@
-FROM oven/bun:1.1.38-debian
+FROM oven/bun:1.3.0-debian
 
 # Static labels
 LABEL org.opencontainers.image.source=https://github.com/sushiibot/sushii-sns
