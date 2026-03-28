@@ -58,20 +58,36 @@ export const OwnerSchema = z.object({
 });
 export type Owner = z.infer<typeof OwnerSchema>;
 
+export const MediaCandidateSchema = z.object({
+  url: z.string(),
+  width: z.number(),
+  height: z.number(),
+  type: z.number().optional(), // for video versions
+  id: z.string().optional(),
+});
+export type MediaCandidate = z.infer<typeof MediaCandidateSchema>;
+
 export const StoryItemSchema = z.object({
-  // Is user and owner always the same?
-  user: OwnerSchema.optional(),
-  owner: OwnerSchema.optional(),
-  taken_at_date: z.coerce.date().optional(),
-
-  // Is thumbnail_url always the max resolution?
-  thumbnail_url: z.string().optional(),
-  image_versions: ImageVersionsSchema.optional(),
-
-  is_video: z.boolean().optional(),
+  pk: z.string(),
+  taken_at: z.number(),
+  user: UserSchema.optional(),
+  image_versions2: z.object({
+    candidates: z.array(MediaCandidateSchema),
+  }).optional(),
+  video_versions: z.array(MediaCandidateSchema).optional(),
   video_url: z.string().optional(),
+  thumbnail_url: z.string().optional(),
+  original_width: z.number().optional(),
+  original_height: z.number().optional(),
+  is_video: z.boolean().optional(),
 });
 export type StoryItem = z.infer<typeof StoryItemSchema>;
+
+export const IgStoriesSchema = z.object({
+  result: z.array(StoryItemSchema),
+  status: z.string().optional(),
+});
+export type IgStories = z.infer<typeof IgStoriesSchema>;
 
 export const DataSchema = z.object({
   additional_data: AdditionalDataSchema.optional(),
@@ -79,8 +95,3 @@ export const DataSchema = z.object({
   items: z.array(StoryItemSchema).optional(),
 });
 export type Data = z.infer<typeof DataSchema>;
-
-export const IgStoriesSchema = z.object({
-  data: DataSchema.optional(),
-});
-export type IgStories = z.infer<typeof IgStoriesSchema>;

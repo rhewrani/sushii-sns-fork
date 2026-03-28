@@ -27,17 +27,17 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
   PLATFORM: Platform = "instagram-story";
 
   URL_REGEX = new RegExp(
-    "https?://" +                        
-    "(?:www\\.)?" +                      
-    "instagram\\.com/" +                 
-    "stories/" +                         
-    "([\\w.-]+)" +                       
-    "/" +                                
-    "(\\d+)" +                           
-    "/?" +                               
-    "(?:\\?\\S*)?" +                     
-    "(?:#\\S*)?",                        
-    "gi"                                  
+    "https?://" +
+    "(?:www\\.)?" +
+    "instagram\\.com/" +
+    "stories/" +
+    "([\\w.-]+)" +
+    "/" +
+    "(\\d+)" +
+    "/?" +
+    "(?:\\?\\S*)?" +
+    "(?:#\\S*)?",
+    "gi"
   );
 
   protected createLinkFromMatch(
@@ -45,7 +45,7 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
   ): SnsLink<InstagramMetadata> {
     const username = match[1];
     const storyId = match[2];
-    
+
     return {
       url: match[0],
       metadata: {
@@ -57,13 +57,12 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
   }
 
   buildApiRequest(details: SnsLink<InstagramMetadata>): Request {
-    console.log("Link: ", "https://instagram.com/stories/" + details.metadata.username + "/" + details.metadata.shortcode);
     return new Request(
       `https://instagram120.p.rapidapi.com/api/instagram/story`,
       {
         method: "POST",
         headers: {
-          "content-type": "application/json",
+          "Content-Type": "application/json",
           "x-rapidapi-host": "instagram120.p.rapidapi.com",
           "x-rapidapi-key": process.env.RAPID_API_KEY!,
         },
@@ -95,24 +94,22 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
       throw new Error("Failed to fetch ig API story response");
     }
 
-    let rawJson;
     let igStoriesRes: IgStories;
+    let rawJson;
     try {
-      rawJson = await response.json();
+      const responseText = await response.text();
 
-      // Throws if invalid
+      rawJson = JSON.parse(responseText);
       igStoriesRes = IgStoriesSchema.parse(rawJson);
     } catch (err) {
       log.error(
         {
           err,
-          response,
           responseCode: response.status,
-          body: rawJson,
+          rawBody: rawJson,
         },
-        "Failed to parse ig trigger API response",
+        "Failed to parse ig API response",
       );
-
       throw new Error("Failed to parse ig JSON response");
     }
 
@@ -123,76 +120,51 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
       "Fetched IG stories response",
     );
 
-    if (!igStoriesRes.data || !igStoriesRes.data.items) {
-      throw new Error("No data");
-    }
-
-    if (igStoriesRes.data.items.length === 0) {
+    if (!igStoriesRes.result || igStoriesRes.result.length === 0) {
       throw new Error("No Instagram stories found");
     }
 
     progressCallback?.(
-      `Downloading ${igStoriesRes.data.items.length} stories...`,
+      `Downloading ${igStoriesRes.result.length} story`,
     );
 
     // Categorize by date in KST!! Could be multiple stories on different days
     // YYMMDD -> [media URLs]
     const storiesByDate = new Map<string, { date?: Date; urls: string[] }>();
 
-    for (const item of igStoriesRes.data.items) {
-      let dateKey = "unknown";
-      if (item.taken_at_date) {
-        const d = dayjs(item.taken_at_date).tz(KST_TIMEZONE);
-        dateKey = d.format("YYMMDD");
-      } else {
-        log.warn(
-          {
-            item,
-          },
-          "No taken_at_date ... bruh",
-        );
-      }
+    for (const item of igStoriesRes.result) {
+      const takenAtMs = item.taken_at * 1000;
+      const d = dayjs(takenAtMs).tz(KST_TIMEZONE);
+      const dateKey = d.format("YYMMDD");
 
-      // Default value
       const storiesDay = storiesByDate.get(dateKey) ?? {
-        date: item.taken_at_date,
+        date: new Date(takenAtMs),
         urls: [],
       };
 
-      // Video
-      if (item.video_url) {
-        storiesDay.urls.push(item.video_url);
+      let mediaUrl: string | undefined;
+
+      if (item.video_versions?.[0]?.url) {
+        mediaUrl = item.video_versions[0].url;
+      } else if (item.video_url) {
+        mediaUrl = item.video_url;
+      } else if (item.image_versions2?.candidates?.[0]?.url) {
+        mediaUrl = item.image_versions2.candidates[0].url;
+      } else if (item.thumbnail_url) {
+        mediaUrl = item.thumbnail_url;
       }
 
-      // Otherwise thumbnail image. Video stories also have thumbnail images,
-      // so only if video URL is missing
-      if (!item.video_url && item.thumbnail_url) {
-        storiesDay.urls.push(item.thumbnail_url);
+      if (mediaUrl) {
+        storiesDay.urls.push(mediaUrl);
+      } else {
+        log.warn({ item, pk: item.pk }, "No extractable media URL for story");
       }
 
-      // Need to set even if array is reference since object isn't set
       storiesByDate.set(dateKey, storiesDay);
-
-      if (!item.video_url && !item.thumbnail_url) {
-        log.warn(
-          {
-            item,
-          },
-          "No video or thumbnail URL... bruh",
-        );
-      }
     }
 
-    log.debug(
-      {
-        stories: storiesByDate,
-      },
-      "Downloading media URLs",
-    );
-
+    const storyUsername = igStoriesRes.result[0]?.user?.username || "Unknown user";
     const postDatas: PostData<InstagramMetadata>[] = [];
-    const storyUsername =
-      igStoriesRes.data.additional_data?.user?.username || "Unknown user";
     for (const [dateKey, { date, urls }] of storiesByDate.entries()) {
       const buffers = await this.downloadImages(urls);
 
