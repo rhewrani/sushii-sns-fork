@@ -650,6 +650,25 @@ async function downloadFilesFromUrls(urls: string[]) {
   );
 }
 
+/**
+ * Fetch Instagram stories with fallbacks.
+ * Primary: RapidAPI stories.
+ */
+async function fetchInstagramStories(
+  igUsername: string,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+  },
+): Promise<PostData<AnySnsMetadata>[]> {
+  return tryWithFallbacks([
+    {
+      name: "RapidAPI stories",
+      fn: () => fetchInstagramStoriesViaRapidApi(igUsername, options),
+    },
+  ]);
+}
+
 async function fetchInstagramStoriesViaRapidApi(
   igUsername: string,
   options?: {
@@ -696,24 +715,6 @@ async function fetchInstagramStoriesViaRapidApi(
   return buildStoryPostDataFromRapidApi(igUsername, items, options);
 }
 
-/**
- * Fetch Instagram stories with fallbacks.
- * Primary: RapidAPI stories.
- */
-async function fetchInstagramStories(
-  igUsername: string,
-  options?: {
-    isPostSeen?: (id: string) => boolean;
-    markPostSeen?: (id: string) => void;
-  },
-): Promise<PostData<AnySnsMetadata>[]> {
-  return tryWithFallbacks([
-    {
-      name: "RapidAPI stories",
-      fn: () => fetchInstagramStoriesViaRapidApi(igUsername, options),
-    },
-  ]);
-}
 
 async function buildStoryPostDataFromRapidApi(
   igUsername: string,
@@ -751,15 +752,15 @@ async function buildStoryPostDataFromRapidApi(
 
     const storyId = String(item?.id ?? item?.pk ?? `story-${igUsername}-${i}`);
     const postID = `ig-story:${igUsername}:${storyId}`;
-    
+
     // Skip if already seen
     if (isPostSeen?.(postID)) {
       continue;
     }
-    
+
     // Mark as seen immediately
     markPostSeen?.(postID);
-    
+
     const files = await downloadFilesFromUrls([mediaUrls[0]]);
 
     out.push({
@@ -778,12 +779,41 @@ async function buildStoryPostDataFromRapidApi(
   return out;
 }
 
-async function fetchTiktokFeedRapidApi(
+/**
+ * Fetch Tiktok feed with fallbacks.
+ * Primary: RapidAPI stories.
+ */
+async function fetchTiktokFeed(
+  igUsername: string,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
+): Promise<PostData<AnySnsMetadata>[]> {
+  return tryWithFallbacks([
+    {
+      name: "RapidAPI tiktok api",
+      fn: () => fetchTiktokFeedRapidApi2(igUsername, options),
+    },
+    {
+      name: "RapidAPI best experience",
+      fn: () => fetchTiktokFeedRapidApiBestExperience(igUsername, options),
+    },
+  ]);
+}
+
+async function fetchTiktokFeedRapidApiBestExperience(
   handle: string,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
 ): Promise<PostData<AnySnsMetadata>[]> {
   if (isDevMode()) {
     const mock = loadMockJson<any>("tiktok-feed.json");
-    return buildTiktokPostDataFromRapidApi(handle, mock);
+    return buildTiktokPostDataFromRapidApiBestExperience(handle, mock, options);
   }
 
   const req = new Request(
@@ -804,19 +834,41 @@ async function fetchTiktokFeedRapidApi(
   }
 
   const json: any = await res.json();
-  return buildTiktokPostDataFromRapidApi(handle, json);
+  return buildTiktokPostDataFromRapidApiBestExperience(handle, json, options);
 }
 
-async function buildTiktokPostDataFromRapidApi(
+async function buildTiktokPostDataFromRapidApiBestExperience(
   handle: string,
   json: any,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
 ): Promise<PostData<AnySnsMetadata>[]> {
+  const { isPostSeen, markPostSeen, limit = Infinity } = options ?? {};
   const awemeList: any[] = Array.isArray(json?.data?.aweme_list)
     ? json.data.aweme_list
     : [];
 
+  console.log("Tiktok feed aweme list", awemeList);
+
+  const unseenAwemes = awemeList.filter(aweme => {
+    const id = String(aweme?.aweme_id ?? "");
+    return !id || !isPostSeen?.(id);
+  });
+
+  for (const aweme of unseenAwemes) {
+    const id = String(aweme?.aweme_id ?? "");
+    if (id) markPostSeen?.(id);
+  }
+
+  const toProcess = unseenAwemes.slice(0, limit);
+
+  console.log("Tiktok posts to process", toProcess);
+
   const out: PostData<AnySnsMetadata>[] = [];
-  for (const aweme of awemeList) {
+  for (const aweme of toProcess) {
     const awemeId = String(aweme?.aweme_id ?? "");
     if (!awemeId) continue;
 
@@ -867,6 +919,118 @@ async function buildTiktokPostDataFromRapidApi(
   return out;
 }
 
+async function fetchTiktokFeedRapidApi2(
+  handle: string,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
+): Promise<PostData<AnySnsMetadata>[]> {
+  if (isDevMode()) {
+    const mock = loadMockJson<any>("tiktok-feed.json");
+    return buildTiktokPostDataFromRapidApi2(handle, mock, options);
+  }
+
+  const req = new Request(
+    `https://tiktok-api6.p.rapidapi.com/user/videos?username=${encodeURIComponent(handle)}`,
+    {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "x-rapidapi-host": "tiktok-api6.p.rapidapi.com",
+        "x-rapidapi-key": config.RAPID_API_KEY,
+      },
+    },
+  );
+
+  const res = await fetch(req);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch tiktok feed (${res.status})`);
+  }
+
+  const json: any = await res.json();
+  return buildTiktokPostDataFromRapidApi2(handle, json, options);
+}
+
+async function buildTiktokPostDataFromRapidApi2(
+  handle: string,
+  json: any,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
+): Promise<PostData<AnySnsMetadata>[]> {
+  const { isPostSeen, markPostSeen, limit = Infinity } = options ?? {};
+
+  const videoList: any[] = Array.isArray(json?.videos) ? json.videos : [];
+
+  const unseenVideos = videoList.filter(video => {
+    const id = String(video?.video_id ?? "");
+    return !id || !isPostSeen?.(id);
+  });
+
+  for (const video of unseenVideos) {
+    const id = String(video?.video_id ?? "");
+    if (id) markPostSeen?.(id);
+  }
+
+  const toProcess = unseenVideos.slice(0, limit);
+
+  const out: PostData<AnySnsMetadata>[] = [];
+
+  for (const video of toProcess) {
+    const videoId = String(video?.video_id ?? "");
+    if (!videoId) continue;
+
+    // console.log(`🔍 Processing (limited) video ${videoId} with limit ${limit}:`, {
+    //   description: video?.description?.slice(0, 30)
+    // });
+    const mediaUrl = video?.unwatermarked_download_url ?? video?.download_url;
+    if (!mediaUrl) continue;
+
+    const imageUrls: string[] = Array.isArray(video?.images) && video.images.length > 0
+      ? video.images
+        .map((img: any) => img?.url ?? img?.display_url)
+        .filter((u: unknown): u is string => typeof u === "string" && u.length > 0)
+      : [];
+
+    const mediaUrls = mediaUrl ? [mediaUrl] : imageUrls;
+    if (mediaUrls.length === 0) continue;
+
+    const files = await downloadFilesFromUrls(mediaUrls);
+
+    // Enforce mp4 extension for videos
+    if (mediaUrl && !imageUrls.length && files.length > 0) {
+      files[0].ext = "mp4";
+    }
+
+    const username = video?.author || handle;
+
+    // Build post URL
+    let postUrl = video?.share_url || `https://www.tiktok.com/@${username}/video/${videoId}`;
+    if (postUrl.includes("?")) {
+      postUrl = postUrl.substring(0, postUrl.indexOf("?"));
+    }
+
+
+    out.push({
+      postLink: {
+        url: postUrl,
+        metadata: { platform: "tiktok" as const, videoId },
+      },
+      username,
+      postID: videoId,
+      originalText: video?.description || "",
+      timestamp: video?.create_time ? new Date(Number(video.create_time) * 1000) : undefined,
+      files,
+    });
+  }
+
+  return out;
+}
+
 function processText(item: any): string {
   let text = String(item?.text ?? "");
 
@@ -884,10 +1048,15 @@ function processText(item: any): string {
 
 async function fetchTwitterFeedRapidApi(
   handle: string,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
 ): Promise<PostData<AnySnsMetadata>[]> {
   if (isDevMode()) {
     const mock = loadMockJson<any>("twitter-feed.json");
-    return buildTwitterPostDataFromRapidApi(handle, mock);
+    return buildTwitterPostDataFromRapidApi(handle, mock, options);
   }
 
   const req = new Request(
@@ -908,18 +1077,36 @@ async function fetchTwitterFeedRapidApi(
   }
 
   const json: any = await res.json();
-  return buildTwitterPostDataFromRapidApi(handle, json);
+  return buildTwitterPostDataFromRapidApi(handle, json, options);
 }
 
 async function buildTwitterPostDataFromRapidApi(
   handle: string,
   json: any,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+    limit?: number;
+  },
 ): Promise<PostData<AnySnsMetadata>[]> {
+  const { isPostSeen, markPostSeen, limit = Infinity } = options ?? {};
   const items: any[] = Array.isArray(json?.timeline) ? json.timeline : [];
+
+  const unseenItems = items.filter(item => {
+    const id = String(item?.tweet_id ?? "");
+    return !id || !isPostSeen?.(id);
+  });
+
+  for (const item of unseenItems) {
+    const id = String(item?.tweet_id ?? "");
+    if (id) markPostSeen?.(id);
+  }
+
+  const toProcess = unseenItems.slice(0, limit);
 
   const out: PostData<AnySnsMetadata>[] = [];
 
-  for (const item of items) {
+  for (const item of toProcess) {
     const postId = String(item?.tweet_id ?? "");
     const username = String(item?.author?.screen_name ?? "unknown");
     const postUrl = postId ? `https://x.com/${username}/status/${postId}` : "";
@@ -1034,7 +1221,11 @@ export async function fetchConnectionAndCreateReviews(
       }
     } else if (connection.type === "tiktok") {
       try {
-        posts = await fetchTiktokFeedRapidApi(connection.handle);
+        posts = await fetchTiktokFeed(connection.handle, {
+          isPostSeen: (id) => isPostSeen(connectionDb, id),
+          markPostSeen: (id) => markPostSeen(connectionDb, id),
+          limit: MAX_REVIEWS_PER_POLL,
+        });
       } catch (err) {
         log.error({ err, handle: connection.handle }, "Failed to fetch TikTok feed");
         await interaction.editReply("Failed to fetch TikTok feed. Please try again.");
@@ -1042,7 +1233,11 @@ export async function fetchConnectionAndCreateReviews(
       }
     } else if (connection.type === "twitter") {
       try {
-        posts = await fetchTwitterFeedRapidApi(connection.handle);
+        posts = await fetchTwitterFeedRapidApi(connection.handle, {
+          isPostSeen: (id) => isPostSeen(connectionDb, id),
+          markPostSeen: (id) => markPostSeen(connectionDb, id),
+          limit: MAX_REVIEWS_PER_POLL,
+        });
       } catch (err) {
         log.error({ err, handle: connection.handle }, "Failed to fetch Twitter feed");
         await interaction.editReply("Failed to fetch Twitter feed. Please try again.");
@@ -1057,22 +1252,7 @@ export async function fetchConnectionAndCreateReviews(
 
     let newPosts: PostData<AnySnsMetadata>[];
 
-    if (connection.type === "instagram") {
-      // Instagram already filtered and marked in fetch layer
-      // Reason: since we want to only show 3 posts, we filter already in the fetch layer before each post is processed to save time and resources
-      newPosts = posts;
-    } else {
-      // TikTok/Twitter need filtering and marking
-      newPosts = posts.filter((p) => {
-        if (!p.postID) return false;
-        return !isPostSeen(connectionDb, p.postID);
-      });
-
-      // Mark ALL fetched posts as seen (so future polls skip them)
-      for (const post of posts) {
-        if (post.postID) markPostSeen(connectionDb, post.postID);
-      }
-    }
+    newPosts = posts;
 
     if (newPosts.length === 0) {
       upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
@@ -1085,9 +1265,6 @@ export async function fetchConnectionAndCreateReviews(
       await interaction.editReply("Cannot send review messages in this channel.");
       return;
     }
-
-    // NEW
-
 
     let postsToReview: PostData<AnySnsMetadata>[] = [];
     let stories: PostData<AnySnsMetadata>[] = [];

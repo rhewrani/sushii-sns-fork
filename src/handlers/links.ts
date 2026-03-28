@@ -79,11 +79,11 @@ export async function extractLinksHandler(msg: Message<true>): Promise<void> {
   }
 }
 
-// Simple fallback parser — add to utils or inline
+// Simple fallback parser — add to utils or inline (for tiktok)
 export function parseUsernameFromUrl(url: string): string | undefined {
   try {
     const urlObj = new URL(url);
-    
+
     // https://www.tiktok.com/@USERNAME/video/123
     const match = urlObj.pathname.match(/^\/@([^\/\?#]+)/);
     return match?.[1];
