@@ -62,7 +62,8 @@ import {
   type ReviewState,
 } from "./review";
 import { findAllSnsLinks, getPlatform, snsService } from "../sns";
-import type { AnySnsMetadata, PostData } from "../../platforms/base";
+import type { AnySnsMetadata, InstagramMetadata, PostData, SnsLink, TikTokMetadata, TwitterMetadata } from "../../platforms/base";
+import { parseUsernameFromUrl } from "../links";
 
 const log = logger.child({ module: "monitor/interactions" });
 
@@ -248,7 +249,6 @@ async function postAndPinPanelEmbed(
 
 export async function promptRepostConfirmation(
   interaction: ChatInputCommandInteraction,
-  postData: PostData<AnySnsMetadata>,
   socialsChannelId: string,
   existingMessageId: string | null,
 ): Promise<ConfirmationResult> {
@@ -652,6 +652,63 @@ async function handleReviewSkip(
   }
 }
 
+function extractConnectionInfo(link: SnsLink<AnySnsMetadata>): {
+  username?: string;
+  postId?: string;
+  canCheckBeforeFetch: boolean
+} {
+  const { metadata, url } = link;
+
+  switch (metadata.platform) {
+    case "twitter":
+      return {
+        username: metadata.username,
+        postId: metadata.id,
+        canCheckBeforeFetch: true
+      };
+
+    case "tiktok":
+      return {
+        username: parseUsernameFromUrl(url),
+        postId: metadata.videoId,
+        canCheckBeforeFetch: true
+      };
+
+    case "instagram":
+    case "instagram-story":
+      return {
+        username: metadata.username, // May be undefined
+        postId: metadata.shortcode,
+        canCheckBeforeFetch: false
+      };
+
+    default:
+      return { username: undefined, postId: undefined, canCheckBeforeFetch: false };
+  }
+}
+
+async function checkDuplicateBeforeFetch(
+  connectionId: string,
+  postId: string,
+  monitorsConfig: MonitorsConfig,
+  interaction: ChatInputCommandInteraction,
+): Promise<boolean> {
+  if (!isConnectionMonitored(monitorsConfig, connectionId)) return true;
+
+  const connectionDb = getConnectionDb(connectionId);
+  const check = checkIfPostWasPosted(connectionDb, postId);
+
+  if (check.wasPosted) {
+    const result = await promptRepostConfirmation(
+      interaction,
+      monitorsConfig.socials_channel_id,
+      check.messageId
+    );
+    return result.confirmed;
+  }
+  return true;
+}
+
 async function handlePostCommand(
   interaction: ChatInputCommandInteraction,
   monitorsConfig: MonitorsConfig,
@@ -677,33 +734,59 @@ async function handlePostCommand(
   }
 
   try {
+    const link = posts[0];
+    const platform = link.metadata.platform;
+    const normalizedPlatform = platform.replace(/-story$/, "");
+
+    let finalConnectionId: string | undefined;
+    let finalConnectionDb: any | undefined;
+    let connectionExists = false;
+
+    const { username, postId, canCheckBeforeFetch } = extractConnectionInfo(link);
+
+    if (canCheckBeforeFetch && username && postId) {
+      finalConnectionId = `${normalizedPlatform}:${username}`;
+
+      const confirmed = await checkDuplicateBeforeFetch(
+        finalConnectionId,
+        postId,
+        monitorsConfig,
+        interaction
+      );
+      if (!confirmed) return;
+    }
+
     const postData = (await snsService(posts, async () => { }).next()).value?.[0];
     if (!postData || !postData.postID) {
       await interaction.editReply("❌ Could not fetch post content.");
       return;
     }
 
-    const platform = postData.postLink.metadata.platform;
-    const username = postData.username;
-    const normalizedPlatform = platform.replace(/-story$/, "");
-    const connectionId = `${normalizedPlatform}:${username}`;
-    const connectionExists = isConnectionMonitored(monitorsConfig, connectionId);
+    // ideally: check if post already exists in db by using the platform + username + post id (e.g. instagram:username and check for post id)
+    // BEFORE fetching, to save bandwith if user decides to skip
+    // problem with instagram POSTS: with format https://www.instagram.com/p/SHORTCODE/ we don't have the username and we cant check db
+    // so we check AFTER sns downloader fetched all the data (I know not optimal)
+    if ((platform === "instagram" || platform === "instagram-story") && postData.username) {
+      finalConnectionId = `${normalizedPlatform}:${postData.username}`;
 
-    if (connectionExists) {
-      const connectionDb = getConnectionDb(connectionId);
-      const check = checkIfPostWasPosted(connectionDb, postData.postID);
-      if (check.wasPosted) {
-        const result: ConfirmationResult = await promptRepostConfirmation(interaction, postData, socialsChannel.id, check.messageId);
-        if (!result.confirmed) {
-          return;
-        }
+      if (isConnectionMonitored(monitorsConfig, finalConnectionId)) {
+        finalConnectionDb = getConnectionDb(finalConnectionId);
+        connectionExists = true;
+
+        const confirmed = await checkDuplicateBeforeFetch(
+          finalConnectionId,
+          postData.postID,
+          monitorsConfig,
+          interaction
+        );
+        if (!confirmed) return;
       }
     }
 
     const result = await sendPostToChannel(socialsChannel as SendableChannels, postData, {
       format: monitorsConfig.format,
       template: monitorsConfig.template,
-      connectionDb: connectionExists ? getConnectionDb(connectionId) : undefined,
+      connectionDb: connectionExists ? finalConnectionDb : undefined,
       postId: connectionExists ? postData.postID : undefined,
     });
 

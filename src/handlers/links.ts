@@ -78,3 +78,17 @@ export async function extractLinksHandler(msg: Message<true>): Promise<void> {
     await msg.reply("oops couldnt get links, <@150443906511667200> fix me pls");
   }
 }
+
+// Simple fallback parser — add to utils or inline
+export function parseUsernameFromUrl(url: string): string | undefined {
+  try {
+    const urlObj = new URL(url);
+    
+    // https://www.tiktok.com/@USERNAME/video/123
+    const match = urlObj.pathname.match(/^\/@([^\/\?#]+)/);
+    return match?.[1];
+  } catch {
+    // URL parsing failed
+  }
+  return undefined;
+}
