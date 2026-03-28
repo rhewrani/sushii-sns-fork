@@ -19,6 +19,7 @@ export const AwemeDetailSchema = z.object({
   author: AuthorSchema.optional(),
   video: VideoSchema.optional(),
   create_time: z.number().optional(),
+  desc: z.string().optional().nullable(),
 });
 export type AwemeDetail = z.infer<typeof AwemeDetailSchema>;
 

@@ -219,6 +219,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
 
   private async fetchContentViaRapidApi(
     snsLink: SnsLink<InstagramMetadata>,
+    progressCallback?: ProgressFn,
   ): Promise<PostData<InstagramMetadata>[]> {
     const shortcode = snsLink.metadata.shortcode;
     if (!shortcode) {
@@ -237,6 +238,8 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
         body: JSON.stringify({ shortcode }),
       },
     );
+
+    progressCallback?.("Fetching IG data via RapidAPI...");
 
     const response = await fetch(req);
     if (!response.ok) {
@@ -264,12 +267,15 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
       throw new Error("RapidAPI returned no media URLs");
     }
 
+    progressCallback?.("Downloading images...");
     const buffers = await this.downloadImages(mediaUrls);
     let files = buffers.map((buf, i): File => ({
       ext: getFileExtFromURL(mediaUrls[i]),
       buffer: buf,
     }));
     files = await convertHeicToJpeg(files);
+
+    progressCallback?.("Downloaded!", true);
 
     return [
       {
@@ -392,7 +398,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
     return tryWithFallbacks([
       {
         name: "RapidAPI mediaByShortcode",
-        fn: () => this.fetchContentViaRapidApi(snsLink),
+        fn: () => this.fetchContentViaRapidApi(snsLink, progressCallback),
       },
       // {
       //   name: "Brightdata",

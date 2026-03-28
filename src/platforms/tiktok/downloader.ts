@@ -144,11 +144,13 @@ export class TikTokDownloader extends SnsDownloader<TikTokMetadata> {
       ttPost.data.aweme_detail.create_time &&
       ttPost.data.aweme_detail.create_time * 1000;
 
+    const caption = ttPost.data?.aweme_detail?.desc?.trim() ?? "";
+
     const postData: PostData<TikTokMetadata> = {
       postLink: snsLink,
       username: ttPost.data.aweme_detail.author?.unique_id || "Unknown user",
       postID: snsLink.metadata.videoId,
-      originalText: "",
+      originalText: caption,
       timestamp: ts ? dayjs(ts).toDate() : undefined,
       files: [file],
     };
@@ -202,6 +204,11 @@ export class TikTokDownloader extends SnsDownloader<TikTokMetadata> {
     mainPostContent += "\n";
     mainPostContent += `<${postData.postLink.url}>`;
     mainPostContent += "\n";
+
+    if (postData.originalText && postData.originalText.trim()) {
+      mainPostContent += `\n${postData.originalText.trim()}`;
+      mainPostContent += "\n";
+    }
 
     // Image URLs can be span multiple messages
     const msgChunkContents = itemsToMessageContents(

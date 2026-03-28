@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
   ActionRowBuilder,
-  AttachmentBuilder,
   MessageFlags,
   ModalBuilder,
   TextInputBuilder,
@@ -22,17 +21,11 @@ import {
 } from "discord.js";
 import { isConnectionMonitored, type ServerConfig } from "../../config/server_config";
 import logger from "../../logger";
-import { chunkArray, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE, sendPostToChannel } from "../../utils/discord";
-import {
-  buildInlineFormatContent,
-  buildLinksFormatMessages,
-  suppressLinksInTextExceptLast,
-} from "../../utils/template";
+import { sendPostToChannel } from "../../utils/discord";
 import type { MonitorsConfig } from "./config";
 import {
   findConnectionById,
   getConnectionId,
-  saveMonitorsConfig,
 } from "./config";
 import {
   checkIfPostWasPosted,
@@ -61,8 +54,8 @@ import {
   REVIEW_SKIP_PREFIX,
   type ReviewState,
 } from "./review";
-import { findAllSnsLinks, getPlatform, snsService } from "../sns";
-import type { AnySnsMetadata, InstagramMetadata, PostData, SnsLink, TikTokMetadata, TwitterMetadata } from "../../platforms/base";
+import { findAllSnsLinks, snsService } from "../sns";
+import type { AnySnsMetadata, SnsLink } from "../../platforms/base";
 import { parseUsernameFromUrl } from "../links";
 
 const log = logger.child({ module: "monitor/interactions" });

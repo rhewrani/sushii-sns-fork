@@ -51,7 +51,7 @@ async function fetchInstagramConnectionPosts(
 ): Promise<PostData<AnySnsMetadata>[]> {
   const [profilePosts, storyPosts] = await Promise.all([
     fetchIgProfilePosts(igUsername, igId, options),
-    fetchInstagramStories(igUsername),
+    fetchInstagramStories(igUsername, options),
   ]);
 
   return [...profilePosts, ...storyPosts] as PostData<AnySnsMetadata>[];
@@ -530,112 +530,6 @@ async function fetchIgProfilePostsViaRapidApiLooter(
   return postDatas;
 }
 
-
-
-/**
- * Fetch all posts for an Instagram profile via the Brightdata API.
- * Uses the same dataset ID as the post downloader but with a profile URL payload.
- */
-async function fetchIgProfilePostsViaBrightdata(
-  igUsername: string,
-): Promise<PostData<InstagramMetadata>[]> {
-  if (isDevMode()) {
-    const mockRaw = loadMockJson<any>("instagram-posts.json");
-    const mockPosts: InstagramPostElement[] = Array.isArray(mockRaw)
-      ? mockRaw
-      : Array.isArray(mockRaw?.posts)
-        ? mockRaw.posts
-        : Array.isArray(mockRaw?.data)
-          ? mockRaw.data
-          : Array.isArray(mockRaw?.result)
-            ? mockRaw.result
-            : [];
-    const postDatasRaw = await Promise.all(
-      mockPosts.map((p) => buildPostData(p, igUsername)),
-    );
-    return postDatasRaw.filter(
-      (x): x is PostData<InstagramMetadata> => x !== null,
-    );
-  }
-
-  const profileUrl = `https://www.instagram.com/${igUsername}/`;
-
-  const triggerReq = new Request(
-    "https://api.brightdata.com/datasets/v3/scrape?dataset_id=gd_lk5ns7kz21pck8jpis&include_errors=true&type=discover_new&discover_by=url",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.BD_API_TOKEN}`,
-      },
-      body: JSON.stringify([{ url: profileUrl, num_of_posts: 4 }]),
-    },
-  );
-
-  const triggerRes = await fetch(triggerReq);
-  if (triggerRes.status !== 200 && triggerRes.status !== 202) {
-    throw new Error(
-      `Failed to trigger IG profile fetch: ${triggerRes.status}`,
-    );
-  }
-
-  const triggerJson = await triggerRes.json();
-  const triggerParsed = BdTriggerResponseSchema.parse(triggerJson);
-
-  if (!triggerParsed.snapshot_id) {
-    throw new Error("No snapshot_id in trigger response");
-  }
-
-  const snapshotId = triggerParsed.snapshot_id;
-
-  log.debug({ igUsername, snapshotId }, "Waiting for IG profile snapshot");
-  await downloader.waitUntilDataReady(snapshotId, 120_000);
-
-  const posts = await downloader.fetchAllSnapshotData(snapshotId);
-
-  log.debug(
-    {
-      totalRecords: posts.length,
-      sample: posts.slice(0, 3).map((p) => ({
-        post_id: p.post_id,
-        url: p.url,
-        post_content_length: p.post_content?.length ?? 0,
-        keys: Object.keys(p),
-      })),
-    },
-    "Brightdata raw snapshot records",
-  );
-
-  // Brightdata may return one record per carousel slide (same post_id, different
-  // post_content entry) OR one record per post with all slides in post_content.
-  // Normalise to the latter before building PostData so all files end up together.
-  const groupedByPostId = new Map<string, InstagramPostElement>();
-  for (const post of posts) {
-    console.log(post.post_id);
-    const id = post.post_id || post.url || "";
-    const existing = groupedByPostId.get(id);
-    if (existing) {
-      // Merge post_content arrays so all carousel slides are in one element
-      existing.post_content = [
-        ...(existing.post_content ?? []),
-        ...(post.post_content ?? []),
-      ];
-    } else {
-      groupedByPostId.set(id, { ...post, post_content: [...(post.post_content ?? [])] });
-    }
-  }
-
-  const mergedPosts = Array.from(groupedByPostId.values());
-  const postDatasRaw = await Promise.all(
-    mergedPosts.map((p) => buildPostData(p, igUsername)),
-  );
-  const postDatas = postDatasRaw.filter(
-    (x): x is PostData<InstagramMetadata> => x !== null,
-  );
-
-  return mergePostDatasById(postDatas);
-}
-
 /**
  * Fetch Instagram profile posts with fallbacks.
  * NOTE: Brightdata is excluded — dataset gd_lk5ns7kz21pck8jpis only accepts
@@ -758,6 +652,10 @@ async function downloadFilesFromUrls(urls: string[]) {
 
 async function fetchInstagramStoriesViaRapidApi(
   igUsername: string,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+  },
 ): Promise<PostData<AnySnsMetadata>[]> {
   if (isDevMode()) {
     const mock = loadMockJson<any>("instagram-stories.json");
@@ -795,7 +693,7 @@ async function fetchInstagramStoriesViaRapidApi(
   });
   const items: any[] = nestedItems.length > 0 ? nestedItems : resultItems;
 
-  return buildStoryPostDataFromRapidApi(igUsername, items);
+  return buildStoryPostDataFromRapidApi(igUsername, items, options);
 }
 
 /**
@@ -804,21 +702,28 @@ async function fetchInstagramStoriesViaRapidApi(
  */
 async function fetchInstagramStories(
   igUsername: string,
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+  },
 ): Promise<PostData<AnySnsMetadata>[]> {
   return tryWithFallbacks([
     {
       name: "RapidAPI stories",
-      fn: () => fetchInstagramStoriesViaRapidApi(igUsername),
+      fn: () => fetchInstagramStoriesViaRapidApi(igUsername, options),
     },
-    // TODO: Add additional fallback provider here
-    // { name: "Placeholder", fn: () => ... },
   ]);
 }
 
 async function buildStoryPostDataFromRapidApi(
   igUsername: string,
   items: any[],
+  options?: {
+    isPostSeen?: (id: string) => boolean;
+    markPostSeen?: (id: string) => void;
+  },
 ): Promise<PostData<AnySnsMetadata>[]> {
+  const { isPostSeen, markPostSeen } = options ?? {};
   const out: PostData<AnySnsMetadata>[] = [];
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -844,8 +749,18 @@ async function buildStoryPostDataFromRapidApi(
     const mediaUrls = [...videoUrls, ...candidateUrls, ...imageVersionCandidateUrls];
     if (mediaUrls.length === 0) continue;
 
-    const files = await downloadFilesFromUrls([mediaUrls[0]]);
     const storyId = String(item?.id ?? item?.pk ?? `story-${igUsername}-${i}`);
+    const postID = `ig-story:${igUsername}:${storyId}`;
+    
+    // Skip if already seen
+    if (isPostSeen?.(postID)) {
+      continue;
+    }
+    
+    // Mark as seen immediately
+    markPostSeen?.(postID);
+    
+    const files = await downloadFilesFromUrls([mediaUrls[0]]);
 
     out.push({
       postLink: {
@@ -853,7 +768,7 @@ async function buildStoryPostDataFromRapidApi(
         metadata: { platform: "instagram-story" as const },
       },
       username: igUsername,
-      postID: `ig-story:${igUsername}:${storyId}`,
+      postID: postID,
       originalText: "",
       timestamp: item?.taken_at ? new Date(Number(item.taken_at) * 1000) : undefined,
       files,
@@ -1274,37 +1189,147 @@ export async function fetchConnectionAndCreateReviews(
   }
 }
 
+
+//
+// UNCOMMENT IF WE EVER NEED TO USE BRIGHTDATA AGAIN
+// CAUTION: BROKEN FUNCTION, NEED TO ADJUST PARSING OF RESPONSE
+//
+
+/**
+ * Fetch all posts for an Instagram profile via the Brightdata API.
+ * Uses the same dataset ID as the post downloader but with a profile URL payload.
+ */
+// async function fetchIgProfilePostsViaBrightdata(
+//   igUsername: string,
+// ): Promise<PostData<InstagramMetadata>[]> {
+//   if (isDevMode()) {
+//     const mockRaw = loadMockJson<any>("instagram-posts.json");
+//     const mockPosts: InstagramPostElement[] = Array.isArray(mockRaw)
+//       ? mockRaw
+//       : Array.isArray(mockRaw?.posts)
+//         ? mockRaw.posts
+//         : Array.isArray(mockRaw?.data)
+//           ? mockRaw.data
+//           : Array.isArray(mockRaw?.result)
+//             ? mockRaw.result
+//             : [];
+//     const postDatasRaw = await Promise.all(
+//       mockPosts.map((p) => buildPostData(p, igUsername)),
+//     );
+//     return postDatasRaw.filter(
+//       (x): x is PostData<InstagramMetadata> => x !== null,
+//     );
+//   }
+
+//   const profileUrl = `https://www.instagram.com/${igUsername}/`;
+
+//   const triggerReq = new Request(
+//     "https://api.brightdata.com/datasets/v3/scrape?dataset_id=gd_lk5ns7kz21pck8jpis&include_errors=true&type=discover_new&discover_by=url",
+//     {
+//       method: "POST",
+//       headers: {
+//         "Content-Type": "application/json",
+//         Authorization: `Bearer ${config.BD_API_TOKEN}`,
+//       },
+//       body: JSON.stringify([{ url: profileUrl, num_of_posts: 4 }]),
+//     },
+//   );
+
+//   const triggerRes = await fetch(triggerReq);
+//   if (triggerRes.status !== 200 && triggerRes.status !== 202) {
+//     throw new Error(
+//       `Failed to trigger IG profile fetch: ${triggerRes.status}`,
+//     );
+//   }
+
+//   const triggerJson = await triggerRes.json();
+//   const triggerParsed = BdTriggerResponseSchema.parse(triggerJson);
+
+//   if (!triggerParsed.snapshot_id) {
+//     throw new Error("No snapshot_id in trigger response");
+//   }
+
+//   const snapshotId = triggerParsed.snapshot_id;
+
+//   log.debug({ igUsername, snapshotId }, "Waiting for IG profile snapshot");
+//   await downloader.waitUntilDataReady(snapshotId, 120_000);
+
+//   const posts = await downloader.fetchAllSnapshotData(snapshotId);
+
+//   log.debug(
+//     {
+//       totalRecords: posts.length,
+//       sample: posts.slice(0, 3).map((p) => ({
+//         post_id: p.post_id,
+//         url: p.url,
+//         post_content_length: p.post_content?.length ?? 0,
+//         keys: Object.keys(p),
+//       })),
+//     },
+//     "Brightdata raw snapshot records",
+//   );
+
+//   // Brightdata may return one record per carousel slide (same post_id, different
+//   // post_content entry) OR one record per post with all slides in post_content.
+//   // Normalise to the latter before building PostData so all files end up together.
+//   const groupedByPostId = new Map<string, InstagramPostElement>();
+//   for (const post of posts) {
+//     console.log(post.post_id);
+//     const id = post.post_id || post.url || "";
+//     const existing = groupedByPostId.get(id);
+//     if (existing) {
+//       // Merge post_content arrays so all carousel slides are in one element
+//       existing.post_content = [
+//         ...(existing.post_content ?? []),
+//         ...(post.post_content ?? []),
+//       ];
+//     } else {
+//       groupedByPostId.set(id, { ...post, post_content: [...(post.post_content ?? [])] });
+//     }
+//   }
+
+//   const mergedPosts = Array.from(groupedByPostId.values());
+//   const postDatasRaw = await Promise.all(
+//     mergedPosts.map((p) => buildPostData(p, igUsername)),
+//   );
+//   const postDatas = postDatasRaw.filter(
+//     (x): x is PostData<InstagramMetadata> => x !== null,
+//   );
+
+//   return mergePostDatasById(postDatas);
+// }
+
 /**
  * Merge multiple PostData objects with the same postID into single objects.
  * This is crucial for handling carousels that are returned as multiple records.
  */
-function mergePostDatasById<T extends AnySnsMetadata>(
-  postDatas: PostData<T>[],
-): PostData<T>[] {
-  const merged = new Map<string, PostData<T>>();
+// function mergePostDatasById<T extends AnySnsMetadata>(
+//   postDatas: PostData<T>[],
+// ): PostData<T>[] {
+//   const merged = new Map<string, PostData<T>>();
 
-  for (const post of postDatas) {
-    if (!post.postID) {
-      // If no ID, we can't merge, so just keep as-is with a fake ID
-      merged.set(`no-id-${Math.random()}`, post);
-      continue;
-    }
+//   for (const post of postDatas) {
+//     if (!post.postID) {
+//       // If no ID, we can't merge, so just keep as-is with a fake ID
+//       merged.set(`no-id-${Math.random()}`, post);
+//       continue;
+//     }
 
-    const existing = merged.get(post.postID);
-    if (existing) {
-      // Merge files
-      existing.files.push(...post.files);
-      // Keep the most informative metadata (prefer non-empty titles)
-      if (!existing.originalText && post.originalText) {
-        existing.originalText = post.originalText;
-      }
-      if (!existing.timestamp && post.timestamp) {
-        existing.timestamp = post.timestamp;
-      }
-    } else {
-      merged.set(post.postID, { ...post, files: [...post.files] });
-    }
-  }
+//     const existing = merged.get(post.postID);
+//     if (existing) {
+//       // Merge files
+//       existing.files.push(...post.files);
+//       // Keep the most informative metadata (prefer non-empty titles)
+//       if (!existing.originalText && post.originalText) {
+//         existing.originalText = post.originalText;
+//       }
+//       if (!existing.timestamp && post.timestamp) {
+//         existing.timestamp = post.timestamp;
+//       }
+//     } else {
+//       merged.set(post.postID, { ...post, files: [...post.files] });
+//     }
+//   }
 
-  return Array.from(merged.values());
-}
+//   return Array.from(merged.values());
+// }
