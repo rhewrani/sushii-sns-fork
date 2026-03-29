@@ -1,21 +1,17 @@
 # sushii-sns
 
-Private social media post downloader Discord bot for content managers to make
-content sharing process easier and automate tedious tasks.
+Private Discord bot for downloading media from social links (`dl …` in whitelisted channels), extracting attachment URLs (`links` reply), and optionally running the Instagram **monitor** (connections, review UI, SQLite). See [docs/architecture.md](docs/architecture.md) and [CLAUDE.md](CLAUDE.md).
 
-To install dependencies:
+## Commands
 
 ```bash
 bun install
+bun dev          # logs via pino-pretty
+bun start        # production-style logging
+bun run typecheck
+bun test
 ```
 
-To run:
+Health and status: HTTP server on port **8080** (`/v1/health`, `/v1/ready`, `/v1/status`, …).
 
-```bash
-bun dev
-# or
-bun start
-```
-
-This project was created using `bun init` in bun v1.1.38.
-[Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
+Runtime: [Bun](https://bun.sh).

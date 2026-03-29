@@ -3,13 +3,23 @@ import config from "../config/config";
 
 const DEFAULT_ALERT_USER_ID = "415912994698952706";
 
-function resolveAlertUserId(): string | null {
+/** Discord user ID for ops mentions (from `ALERT_DISCORD_USER_ID` or default). Empty env disables. */
+export function getOpsAlertUserId(): string | null {
   const raw = config.ALERT_DISCORD_USER_ID;
   if (raw !== undefined && raw.trim() === "") {
     return null;
   }
-  const id = (raw?.trim() || DEFAULT_ALERT_USER_ID);
+  const id = raw?.trim() || DEFAULT_ALERT_USER_ID;
   return id.length > 0 ? id : null;
+}
+
+/** User-facing line when the `links` command fails to send. Uses same ops ID as `sendOpsAlert`. */
+export function formatLinksFailureReply(): string {
+  const userId = getOpsAlertUserId();
+  if (userId) {
+    return `oops couldnt get links, <@${userId}> fix me pls`;
+  }
+  return "oops couldnt get links, fix me pls";
 }
 
 /**
@@ -21,7 +31,7 @@ export async function sendOpsAlert(
   err: unknown,
   extraLines?: string,
 ): Promise<void> {
-  const userId = resolveAlertUserId();
+  const userId = getOpsAlertUserId();
   const mention = userId ? `<@${userId}> ` : "";
   const detail =
     err instanceof Error

@@ -2,6 +2,7 @@ import type { Message } from "discord.js";
 import { MessageFlags } from "discord.js";
 import logger from "../logger";
 import { itemsToMessageContents } from "../utils/discord";
+import { formatLinksFailureReply } from "../utils/opsAlert";
 
 const log = logger.child({ module: "extractLinksHandler" });
 
@@ -75,20 +76,6 @@ export async function extractLinksHandler(msg: Message<true>): Promise<void> {
   } catch (err) {
     log.error(err, "Failed to send links");
 
-    await msg.reply("oops couldnt get links, <@415912994698952706> fix me pls");
+    await msg.reply(formatLinksFailureReply());
   }
-}
-
-// Simple fallback parser — add to utils or inline (for tiktok)
-export function parseUsernameFromUrl(url: string): string | undefined {
-  try {
-    const urlObj = new URL(url);
-
-    // https://www.tiktok.com/@USERNAME/video/123
-    const match = urlObj.pathname.match(/^\/@([^\/\?#]+)/);
-    return match?.[1];
-  } catch {
-    // URL parsing failed
-  }
-  return undefined;
 }

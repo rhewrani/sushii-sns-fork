@@ -14,66 +14,94 @@ INTEGRATION=1 bun test  # Also run integration tests (real API calls)
 ```
 
 To run a single test file:
+
 ```bash
 bun test src/platforms/twitter/downloader.test.ts
 ```
 
+## Deeper docs
+
+- [docs/architecture.md](docs/architecture.md) — code flows, directory map
+- [docs/monitor-feature.md](docs/monitor-feature.md) — Instagram monitor (connections, review queue)
+- [docs/platforms.md](docs/platforms.md), [docs/commands.md](docs/commands.md)
+
 ## Architecture
 
-**sushii-sns** is a Discord bot that downloads media from social media platforms (Twitter/X, Instagram posts, Instagram stories, TikTok) when users post links prefixed with `dl` in whitelisted channels. It also extracts attachment links from replied-to messages when the command `links` is sent as a reply.
+**sushii-sns** downloads media from Twitter/X, Instagram posts/reels, Instagram stories, and TikTok when users post links prefixed with `dl` in whitelisted channels. It also extracts attachment URLs when someone replies with `links` to a message.
 
 ### Entry point flow
 
-`src/index.ts` → creates a `discord.js` Client, registers `MessageCreate` handler, starts a Hono HTTP healthcheck server on port 8080.
+`src/index.ts` — loads env (`config/config.ts`), optional `server_config.json`, registers Discord handlers, **always** registers slash commands, starts a Hono HTTP server on **port 8080** (`src/server/botHttp.ts`).
 
-`src/handlers/MessageCreate.ts` → filters messages to whitelisted channels (from `CHANNEL_ID_WHITELIST` env var), then runs `snsHandler` and `extractLinksHandler` in parallel via `Promise.allSettled`.
+`src/handlers/MessageCreate.ts` — filters to `CHANNEL_ID_WHITELIST`, runs `extractLinksHandler` and `snsHandler` in parallel via `Promise.allSettled`.
+
+`InteractionCreate` — `/usage` → `handlers/usageSlash.ts`; monitor UI → `handlers/monitor/interactions.ts` when `MONITORS_CONFIG_PATH` is set and metadata DB is open.
+
+### HTTP routes (port 8080)
+
+- `GET /` — simple text
+- `GET /v1/health` — `OK` / `500` from gateway-style health (`clientHealthy`)
+- `GET /v1/ready` — Discord client ready
+- `GET /v1/uptime` — process and bot uptime JSON
+- `GET /v1/status` — health, ping, guild count, memory (JSON)
+
+Request logging uses `hono/logger` middleware.
 
 ### SNS downloader pattern
 
-All downloaders live in `src/platforms/<name>/downloader.ts` and extend the abstract `SnsDownloader<M>` class (`src/platforms/base.ts`). Each downloader implements:
+Downloaders live in `src/platforms/<name>/downloader.ts` and extend `SnsDownloader<M>` (`src/platforms/base.ts`):
 
-- `PLATFORM` — platform identifier string
-- `URL_REGEX` — regex to match platform URLs
-- `createLinkFromMatch(match)` — builds `SnsLink<M>` from regex capture groups
-- `buildApiRequest(details)` — constructs the fetch `Request`
-- `fetchContent(snsLink, progressCallback?)` — full fetch + download pipeline, returns `PostData<M>[]`
-- `buildDiscordAttachments(postData)` — returns `MessageCreateOptions[]` with file buffers (sent first to get CDN URLs)
-- `buildDiscordMessages(postData, attachmentURLs)` — returns `MessageCreateOptions[]` with formatted text + CDN links
+- `PLATFORM`, `URL_REGEX`, `createLinkFromMatch`, `buildApiRequest`, `fetchContent`, `buildDiscordAttachments`, `buildDiscordMessages`
 
-The `snsHandler` in `src/handlers/sns.ts` orchestrates: finds all links → streams results via async generator → sends attachments → sends formatted messages with CDN URLs.
+`snsHandler` (`src/handlers/sns.ts`) finds links, streams via `snsService`, sends attachments then formatted replies. Shared link discovery is exported as `findAllSnsLinks` / `snsService` for the monitor pipeline.
 
 ### Platform implementations
 
 | Directory | Platform | API |
 |-----------|----------|-----|
-| `src/platforms/twitter/` | Twitter/X | fxtwitter.com API |
-| `src/platforms/instagram-post/` | Instagram posts/reels | Brightdata datasets API (async: trigger → poll progress → fetch snapshot) |
-| `src/platforms/instagram-story/` | Instagram stories (profile URL) | RapidAPI instagram-scraper-api2 |
+| `src/platforms/twitter/` | Twitter/X | api.fxtwitter.com |
+| `src/platforms/instagram-post/` | Posts/reels | Bright Data datasets (async snapshot) |
+| `src/platforms/instagram-story/` | Stories | RapidAPI (URL shape `.../stories/{username}/{storyId}/`) |
 | `src/platforms/tiktok/` | TikTok | RapidAPI |
 
-Instagram posts use an async scraping flow: trigger a snapshot job, poll `BdMonitorResponse` until `status === "ready"`, then fetch the snapshot data.
+### Monitor feature (optional)
 
-### Other handlers
+When `MONITORS_CONFIG_PATH` points to a JSON config:
 
-- `src/handlers/sns.ts` — orchestrates SNS downloads; triggered by messages starting with `dl`
-- `src/handlers/links.ts` — triggered by reply with `links` command; extracts attachment URLs from the referenced message and sends them chunked into ≤2000-char messages
+- **Connections** (not legacy “subscriptions”): each maps Instagram sources → review channel → destination channel; panel lives in `panel_channel_id`.
+- **SQLite**: `DB_PATH` metadata DB plus per-connection DB files under `{dirname(DB_PATH)}/connections-db/`. See `src/handlers/monitor/db.ts`, `schema.ts`.
+- **Queue**: `handlers/monitor/queue.ts` serializes post jobs with timeout.
+- **Ops alerts**: `src/utils/opsAlert.ts` (optional `ALERT_DISCORD_USER_ID`).
 
-### Utilities
+### Other notable modules
 
-- `src/utils/discord.ts` — `itemsToMessageContents` (chunks URL lists into ≤2000-char Discord messages), `chunkArray`, `formatDiscordTitle`, `MAX_ATTACHMENTS_PER_MESSAGE` (10), `KST_TIMEZONE`
-- `src/utils/http.ts` — `fetchWithHeaders` (adds User-Agent header), `getFileExtFromURL`
-- `src/utils/heic.ts` — converts HEIC buffers to JPEG via `sharp`
-- `src/logger.ts` — pino logger instance
-- `src/config/config.ts` — zod-validated env config (exits on invalid env)
+- `src/apiUsage.ts` — usage counters for external APIs
+- `src/utils/fallback.ts` — `tryWithFallbacks` for multi-provider fetches
+- `src/utils/opsAlert.ts` — public-channel failure alerts
+- `src/utils/discord.ts` — chunking, titles, `sendPostToChannel` (review/monitor posting)
+- `src/utils/http.ts` — `fetchWithHeaders`, `getFileExtFromURL`
+- `src/utils/socialUrls.ts` — small URL parsers (e.g. TikTok username from URL)
+- `src/handlers/snsErrors.ts` — user-facing SNS error strings / ops alert gating
+- `src/config/config.ts` — zod-validated env (exits on invalid env)
 
 ### Required environment variables
 
 ```
 DISCORD_TOKEN
 APPLICATION_ID
-BD_API_TOKEN        # Brightdata API token for Instagram posts
-RAPID_API_KEY       # RapidAPI key for Instagram stories and TikTok
+BD_API_TOKEN          # Bright Data (Instagram posts)
+RAPID_API_KEY         # Instagram stories + TikTok
 CHANNEL_ID_WHITELIST  # Comma-separated Discord channel IDs
 ```
 
-Optional: `LOG_LEVEL` (default: `info`), `SENTRY_DSN`, `SERVER_CONFIG_PATH`, `MONITORS_CONFIG_PATH`, `DB_PATH` (default: `./monitors.db`)
+### Optional environment variables
+
+| Variable | Notes |
+|----------|--------|
+| `LOG_LEVEL` | Default `info` |
+| `SENTRY_DSN` | Error tracking |
+| `SERVER_CONFIG_PATH` | Guild routing / feature flags (`server_config.json`) |
+| `MONITORS_CONFIG_PATH` | Enables monitor + slash commands beyond `/usage` |
+| `DB_PATH` | Default `./data.db` (metadata; connection DBs live alongside) |
+| `ALERT_DISCORD_USER_ID` | Ops mention for alerts; empty string disables mention |
+| `MONITOR_DEV_MODE` | See `src/handlers/monitor/runtime.ts` |

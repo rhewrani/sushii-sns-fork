@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { fetchWithHeaders, getFileExtFromURL } from "./http";
 
 describe("getFileExtFromURL", () => {
@@ -31,35 +31,40 @@ describe("fetchWithHeaders", () => {
   });
 
   it("sets User-Agent when given a URL string", async () => {
-    const fetchMock = mock(() => Promise.resolve(new Response("ok")));
-    globalThis.fetch = fetchMock as typeof fetch;
+    let lastInit: RequestInit | undefined;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      lastInit = init;
+      return Promise.resolve(new Response("ok"));
+    }) as typeof fetch;
     await fetchWithHeaders("https://example.com/path");
-    expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
-    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
-    expect(new Headers(init?.headers).get("User-Agent")).toContain("sushii-sns");
+    expect(new Headers(lastInit?.headers).get("User-Agent")).toContain("sushii-sns");
   });
 
   it("preserves existing init headers and adds User-Agent", async () => {
-    const fetchMock = mock(() => Promise.resolve(new Response("ok")));
-    globalThis.fetch = fetchMock as typeof fetch;
+    let lastInit: RequestInit | undefined;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      lastInit = init;
+      return Promise.resolve(new Response("ok"));
+    }) as typeof fetch;
     await fetchWithHeaders("https://example.com/", {
       headers: { "X-Test": "1" },
     });
-    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
-    const h = new Headers(init?.headers);
+    const h = new Headers(lastInit?.headers);
     expect(h.get("User-Agent")).toContain("sushii-sns");
     expect(h.get("X-Test")).toBe("1");
   });
 
   it("merges User-Agent into an existing Request", async () => {
-    const fetchMock = mock(() => Promise.resolve(new Response("ok")));
-    globalThis.fetch = fetchMock as typeof fetch;
+    let lastRequest: Request | undefined;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      lastRequest = input instanceof Request ? new Request(input, init) : new Request(input, init);
+      return Promise.resolve(new Response("ok"));
+    }) as typeof fetch;
     const req = new Request("https://example.com/", {
       headers: { Authorization: "Bearer token" },
     });
     await fetchWithHeaders(req);
-    const passed = fetchMock.mock.calls[0][0] as Request;
-    expect(passed.headers.get("User-Agent")).toContain("sushii-sns");
-    expect(passed.headers.get("Authorization")).toBe("Bearer token");
+    expect(lastRequest?.headers.get("User-Agent")).toContain("sushii-sns");
+    expect(lastRequest?.headers.get("Authorization")).toBe("Bearer token");
   });
 });

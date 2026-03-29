@@ -1,3 +1,7 @@
+/**
+ * Monitor polling: Instagram/TikTok/Twitter feeds, review creation, and `/fetch-all` sync.
+ * Large module — new code should prefer small helpers in separate files to avoid growing this further.
+ */
 import type { Database } from "bun:sqlite";
 import {
   AttachmentBuilder,

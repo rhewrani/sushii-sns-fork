@@ -46,12 +46,10 @@ export function openMetadataDb(path: string): Database {
   const db = new Database(path, { create: true });
 
   db.exec("PRAGMA journal_mode=WAL;");
+  // Single path: `runMigrations` bumps PRAGMA user_version per step. Metadata SQL uses
+  // CREATE TABLE IF NOT EXISTS; connection DBs below still use the commented safety
+  // pattern only if we re-enable it for ALTER-heavy migrations.
   runMigrations(db, METADATA_MIGRATIONS);
-  // Safety: if the DB was created with an older monitor schema, PRAGMA user_version
-  // may prevent our migrations from running. Ensure the new tables exist anyway.
-  for (const migration of METADATA_MIGRATIONS) {
-    for (const sql of migration) db.exec(sql);
-  }
 
   return db;
 }
@@ -210,11 +208,7 @@ export function purgeAllSeenPosts(): void {
 
 // === Posted Message ID Tracking ===
 
-/**
- * Get the Discord message ID for a post that was sent to the socials channel.
- * Returns null if the post was seen but never posted (e.g., rejected in review).
- */
-export function getPostedMessageId(
+function queryPostedMessageId(
   connectionDb: Database,
   postId: string,
 ): string | null {
@@ -224,6 +218,17 @@ export function getPostedMessageId(
     )
     .get(postId);
   return row?.posted_message_id ?? null;
+}
+
+/**
+ * Get the Discord message ID for a post that was sent to the socials channel.
+ * Returns null if the post was seen but never posted (e.g., rejected in review).
+ */
+export function getPostedMessageId(
+  connectionDb: Database,
+  postId: string,
+): string | null {
+  return queryPostedMessageId(connectionDb, postId);
 }
 
 /**
@@ -290,18 +295,9 @@ export function checkIfPostWasPosted(
   connectionDb: Database,
   postId: string,
 ): PostPostedCheck {
-  const row = connectionDb
-    .query<{ posted_message_id: string | null }, [string]>(
-      "SELECT posted_message_id FROM seen_posts WHERE post_id = ?",
-    )
-    .get(postId);
-  
-  const messageId = row?.posted_message_id ?? null;
-  const wasPosted = messageId !== null;
-  
+  const messageId = queryPostedMessageId(connectionDb, postId);
   if (messageId !== null) {
     return { wasPosted: true as const, messageId };
-  } else {
-    return { wasPosted: false as const, messageId: null };
   }
+  return { wasPosted: false as const, messageId: null };
 }
