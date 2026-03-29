@@ -1,78 +1,51 @@
 # Architecture Overview
 
-Sushii-SNS is a private Discord bot designed for content managers to make social media content sharing easier and automate tedious tasks. This document explains the high-level architecture of the application and the exact code flows to help contributors understand how to modify the codebase.
+Sushii-SNS is a private Discord bot for content managers. This page summarizes how the app is wired; see [commands.md](./commands.md) and [monitor-feature.md](./monitor-feature.md) for user-facing behavior.
 
-## Core Setup
+## Core setup
 
-The bot is written in **TypeScript** and executed using **Bun**. It relies on `discord.js` to interface with the Discord API.
+- **Runtime:** TypeScript on **Bun**, **discord.js** for Discord.
+- **Entry:** [`src/index.ts`](../src/index.ts) loads env ([`config/config.ts`](../src/config/config.ts)), optionally JSON from `SERVER_CONFIG_PATH` via [`server_config.ts`](../src/config/server_config.ts), creates the Discord client, registers **`MessageCreate`** and **`InteractionCreate`**, and starts the HTTP server from [`src/server/botHttp.ts`](../src/server/botHttp.ts) on **port 8080**.
+- **Slash commands** are registered at startup (`/monitor`, `/post`, `/usage`, `/fetch-all`). The monitor interaction handler runs when `MONITORS_CONFIG_PATH` is set and the metadata DB is open; `/usage` is handled separately ([`usageSlash.ts`](../src/handlers/usageSlash.ts)).
 
-The main entry point is `src/index.ts`. On startup, the bot:
-1. Loads configuration files from `config.ts` and `server_config.ts`.
-2. Initializes a new `discord.js` client with intents to read guild messages.
-3. Sets up event listeners for `MessageCreate` (for standard messages) and `InteractionCreate` (for UI button and modal interactions).
-4. Spins up a health check Hono HTTP server running on port 8080.
-5. If configured, it registers the Instagram Monitor system routing.
+## HTTP (port 8080)
 
-## Directory Structure
+| Route | Purpose |
+|--------|---------|
+| `GET /` | Simple text response |
+| `GET /v1/health` | Gateway-style health from WebSocket status |
+| `GET /v1/ready` | Discord client ready |
+| `GET /v1/uptime` | Process / bot uptime JSON |
+| `GET /v1/status` | Health, ping, guild count, memory |
 
-- **`index.ts`**: The central entry point. Orchestrates Discord client initialization, event routing (`MessageCreate`, `InteractionCreate`), and health check server.
-- **`config/`**: Handles loading JSON configurations and `.env` parsing.
-- **`handlers/`**: Core Discord event pipelines.
-  - `MessageCreate.ts`: Standard message pipeline for link detection.
-  - `sns.ts`: Detects and processes social media link commands (`dl`).
-  - `monitor/`: Contains the interactive SNS monitor system.
-    - `interactions.ts`: **Dispatcher for all Buttons, Modals, and Slash Commands.**
-    - `fetch.ts`: Logic for API scraping (Brightdata/RapidAPI) and database filtering.
-    - `review.ts`: In-memory state management for pending post reviews.
-- **`platforms/`**: Website-specific scrapers (Twitter, Instagram, TikTok).
-- **`utils/`**: Helper functions for Discord UI, Image conversion (HEIC -> JPEG), and networking.
+Request logging uses Hono’s logger middleware.
 
-## Code Flow: Processing a `dl` Download Request
+## Directory structure (high level)
 
-When a user pastes a command like `dl https://x.com/user/status/123`, the following exact code flow is executed:
+| Area | Role |
+|------|------|
+| [`handlers/MessageCreate.ts`](../src/handlers/MessageCreate.ts) | Whitelist check; runs `snsHandler` and `extractLinksHandler` in parallel |
+| [`handlers/sns.ts`](../src/handlers/sns.ts) | `dl` downloads; uses [`snsErrors.ts`](../src/handlers/snsErrors.ts) for user-facing errors |
+| [`handlers/monitor/`](../src/handlers/monitor/) | Monitor: config, DB, **split interaction modules** (panel / post / review), [`interactions.ts`](../src/handlers/monitor/interactions.ts) dispatcher, [`fetch.ts`](../src/handlers/monitor/fetch.ts), [`queue.ts`](../src/handlers/monitor/queue.ts), [`review.ts`](../src/handlers/monitor/review.ts) |
+| [`platforms/`](../src/platforms/) | Per-platform `SnsDownloader` implementations |
+| [`utils/`](../src/utils/) | Discord helpers ([`discord.ts`](../src/utils/discord.ts)), HTTP, templates, [`opsAlert.ts`](../src/utils/opsAlert.ts), [`socialUrls.ts`](../src/utils/socialUrls.ts), etc. |
 
-1. **`MessageCreateHandler` (`src/handlers/MessageCreate.ts`)**
-   - Ignores bot messages and DMs.
-   - Validates that the channel ID is present in the `CHANNEL_ID_WHITELIST`.
-   - Dispatches the message concurrently to `extractLinksHandler` and `snsHandler`.
+## Flow: `dl` download
 
-2. **Trigger Validation (`src/handlers/sns.ts`)**
-   - The `snsHandler` checks if the message string starts with `"dl"`.
-   - It iterates through the instantiated array of `downloaders` calling `.findUrls(content)`.
-   - If URLs are matched via regex, it triggers intermediate UI updates (Discord reactions and a "Downloading..." edit message).
+1. **MessageCreate** — Ignore bots/DMs; require channel in `CHANNEL_ID_WHITELIST`.
+2. **`snsHandler`** — Message must start with `dl`; [`findAllSnsLinks`](../src/handlers/sns.ts) aggregates all platform regex matches.
+3. **`snsService`** — Async generator; each link calls the matching downloader’s `fetchContent`.
+4. **Delivery** — Attachments uploaded first (CDN URLs), then `buildDiscordMessages` text replies.
 
-3. **Content Fetching (The Async Generator)**
-   - The handler yields to `snsService()`, an async generator function.
-   - This invokes the specific platform's `fetchContent()` method. The platform fetches the media buffers, determines the file extension (e.g., MP4 or JPG), and returns an array of `PostData` objects (containing the files, caption, timestamp, etc.).
+## Flow: monitor interactions
 
-4. **Discord UI Formatting & Delivery**
-   - The async generator passes the `PostData` back to `snsHandler`.
-   - **Step A:** `platform.buildDiscordAttachments()` wraps the raw `Buffer`s in `discord.js` `AttachmentBuilder` objects.
-   - **Step B:** The bot sends *just* these attachments to the channel. This forces Discord to upload the media to its CDN and return CDN URLs.
-   - **Step C:** `platform.buildDiscordMessages()` generates the final text message containing the original caption linked specifically to those fresh Discord CDN URLs.
-   - **Step D:** The bot replies to the original message with the processed text payload.
+1. **`InteractionCreate`** in `index.ts` routes `/usage` first, then monitor commands to [`handleInteraction`](../src/handlers/monitor/interactions.ts) when configured.
+2. **Dispatcher** — Prefixes live in [`review.ts`](../src/handlers/monitor/review.ts) (e.g. `monitor:poll:`, `monitor:review:post:`). Implementation is split across [`interactionPanel.ts`](../src/handlers/monitor/interactionPanel.ts), [`interactionPost.ts`](../src/handlers/monitor/interactionPost.ts), [`interactionReview.ts`](../src/handlers/monitor/interactionReview.ts).
+3. **State** — SQLite for panel embed, connection cooldowns, per-connection `seen_posts`; ephemeral review state in `review.ts`.
 
-## Code Flow: Interactive UI (Buttons & Modals)
+## Storage and database
 
-Unlike simple text commands, the Monitor system relies on Discord's Interaction API. The flow for a button click (e.g., "Poll") is:
+- **Metadata DB** (path from `DB_PATH`, default `./data.db`): `monitor_panel_messages`, `monitor_connection_meta`.
+- **Per-connection DBs** under `{dirname(DB_PATH)}/connections-db/<connectionId>.db`: `seen_posts` (and optional `posted_message_id` tracking for review posting).
 
-1. **`InteractionCreate` (`src/index.ts`)**
-   - The Discord client receives an interaction and passes it to `handleInteraction` in `src/handlers/monitor/interactions.ts`.
-
-2. **Dispatcher (`interactions.ts`)**
-   - The dispatcher checks the `customId` of the interaction (Button, Select Menu, or Modal).
-   - It uses **Prefix Matching** (defined in `review.ts`) to route the interaction. E.g., `customId.startsWith("monitor:poll:")` routes to `handlePanelPollButton`.
-
-3. **State Stateful Handling**
-   - **Persistent State**: The bot queries SQLite to check cooldowns or connection metadata.
-   - **Ephemeral State**: For multi-step flows like "Reviewing a post," the bot stores the raw media and pending edits in an in-memory `Map` (`pendingReviews` in `review.ts`).
-
-4. **UI Updates**
-   - The handler acknowledges the interaction using `interaction.update()` (to refresh the message in place) or `interaction.showModal()` (to prompt for text input).
-
-## Storage and Database
-
-The bot uses SQLite (`bun:sqlite`) via `src/handlers/monitor/db.ts` to persist:
-- **`panel_messages`**: IDs of pinned monitor embeds for global status updates.
-- **`connection_meta`**: Runtime statistics and cooldown timestamps per connection.
-- **`monitor_seen_posts`**: A history of processed post IDs to prevent duplicate alerts.
+See [monitor-feature.md](./monitor-feature.md) for config shape.

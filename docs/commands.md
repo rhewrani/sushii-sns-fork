@@ -1,44 +1,45 @@
-# Bot Commands
+# Bot commands
 
-Sushii-SNS features two main ways to interact with it: message-based commands for downloading media, and slash commands for the Instagram Monitor feature.
+Two families: **message commands** (`dl`, `links`) in whitelisted channels, and **slash commands** (registered globally at startup).
 
-## 1. The `dl` Keyword Download
+Environment basics: `CHANNEL_ID_WHITELIST`, `DISCORD_TOKEN`, `APPLICATION_ID`. Monitor also needs `MONITORS_CONFIG_PATH` and API keys per [CLAUDE.md](../CLAUDE.md).
 
-To trigger the bot to download media from a supported platform, you must send a message starting with the keyword `dl` followed by the URL(s) you wish to process.
+## 1. `dl` — download media
 
-**Syntax:**
+Send a message whose content **starts with** `dl` (then a space or URL). The bot matches supported platform URLs and downloads media into the channel.
+
 ```text
-dl [URL]
+dl https://x.com/user/status/1234567890
+dl https://www.instagram.com/p/SHORTCODE/
+dl https://www.tiktok.com/@user/video/1234567890
 ```
 
-**Examples:**
-```text
-dl https://twitter.com/user/status/123456789
-dl https://www.instagram.com/p/C123456/
-dl https://www.tiktok.com/@user/video/123456789
-```
+- Only runs in channels listed in `CHANNEL_ID_WHITELIST`.
+- Reactions + optional progress messaging while fetching.
+- User-facing errors may use [`snsErrors.ts`](../src/handlers/snsErrors.ts); repeated provider failures can trigger [`opsAlert`](../src/utils/opsAlert.ts).
 
-**How it works:**
-1. The bot listens to all messages in the server where it has permissions.
-2. If it detects `dl` at the start, it scans the message content for matching platform URLs using its internal list of `SnsDownloader` plugins.
-3. It validates the URLs, downloads the high-quality media (bypassing normal platform embed restrictions), and sends the media directly into the channel as attachments.
-4. The bot attaches emojis as status reactions (e.g., a thumbs-up when detected) and edits an intermediate "Typing..." / "Downloading..." message during fetching.
+## 2. `links` — attachment URLs
 
-## 2. Instagram Monitor Commands
+Reply to **any message** with the exact text `links` (after trimming). The bot sends attachment URLs from the referenced message, chunked to Discord’s length limit. On failure, the error line uses the same ops user resolution as alerts ([`formatLinksFailureReply`](../src/utils/opsAlert.ts)).
 
-To manage the automated Instagram post distribution fetching, the bot uses native Discord slash commands.
+## 3. Slash commands
 
-**Slash Command:**
-```text
-/monitor embed [username]
-```
+Registered in [`commands.ts`](../src/handlers/monitor/commands.ts). All require **Manage Server** (`ManageGuild`) except where noted.
 
-- **Description:** Posts an interactive status embed in the channel for a specific Instagram username.
-- **Permissions:** Restricted to users with the `ManageGuild` permission (Server Admins).
-- **Usage:**
-  - `username`: The exact Instagram username you have configured the bot to watch (via `monitors.json`).
-  - The channel you run this command in **must** be listed as a watcher for that username in the configuration.
-- **What it does:**
-  It creates (and pins) an interactive embed showing the current fetch status, along with buttons to manually "Fetch New Posts" or check the status. 
+| Command | Purpose |
+|---------|---------|
+| `/usage` | API usage counters for this process (`scope`: all / providers / endpoints). Handled in [`usageSlash.ts`](../src/handlers/usageSlash.ts). |
+| `/monitor panel setup` | Run **in** `panel_channel_id`: post/pin or refresh the monitor panel embed. |
+| `/monitor panel refresh` | Refresh the panel embed if it already exists. |
+| `/monitor db purge-connection` | Purge seen-post + cooldown data for one `type` + `handle`. |
+| `/monitor db purge-all` | Purge all connection metadata and seen posts (destructive). |
+| `/post url:` | Fetch a single post URL and send it to `socials_channel_id` (with duplicate checks when configured). |
+| `/fetch-all` | Requires monitor enabled: mark-seen sync for every connection, refresh panel; **no** review messages. |
 
-For full details on configuring and running the Monitor, see [monitor-feature.md](./monitor-feature.md).
+If `MONITORS_CONFIG_PATH` is unset, `/fetch-all` replies that the monitor is disabled; `/monitor` and `/post` still exist in the app but monitor-specific behavior needs the config + DB.
+
+## Related docs
+
+- [architecture.md](./architecture.md) — entrypoint, HTTP routes, file layout.
+- [monitor-feature.md](./monitor-feature.md) — connections, DB, review prefixes.
+- [platforms.md](./platforms.md) — per-platform URLs and APIs.

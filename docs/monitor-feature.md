@@ -1,73 +1,68 @@
-# Monitor / Fetch Distribution Feature
+# Monitor / fetch / review feature
 
-The Monitor feature provides a semi-automated system designed to track new posts on specific Instagram/TikTok accounts and distribute them across multiple Discord servers simultaneously in a controlled, manual-review fashion. 
+The monitor tracks configured social connections (Instagram, TikTok, Twitter), lets staff **poll** for new items, and routes them through a **manual review** queue before posting to a designated “socials” channel.
 
-Unlike fully automated webhooks that might get blocked or post bad scrapes, this system employs a **Manual Polling & Review Queue** code flow.
+## Configuration (`MONITORS_CONFIG_PATH`)
 
-## The Configuration Topography
-
-The bot administrator defines connections between social media accounts and Discord configurations entirely in a local JSON config (`MONITORS_CONFIG_PATH`).
+Connections are declared in JSON (not the older per-subscription-only model). Example shape:
 
 ```json
 {
-  "panel_channel_id": "999999999999",
-  "socials_channel_id": "888888888888",
+  "panel_channel_id": "CHANNEL_ID",
+  "socials_channel_id": "CHANNEL_ID",
   "format": "inline",
+  "template": "",
   "connections": [
     {
       "type": "instagram",
-      "handle": "lisa_bp",
+      "handle": "username",
+      "igId": "NUMERIC_IG_USER_ID",
       "cooldown_seconds": 300
     }
   ]
 }
 ```
 
-## Deep Code Flow: Fetching and Reviewing
+- **`panel_channel_id`**: Where the status embed and poll buttons live.
+- **`socials_channel_id`**: Destination for approved posts (`/post` and review **Post**).
+- **`connections`**: Each entry gets a stable id like `instagram:handle` used for SQLite and poll button `customId`s.
 
-This entire system spans `src/handlers/monitor/interactions.ts` and `src/handlers/monitor/fetch.ts`. 
+## Code map
 
-### 1. Panel and Cooldown Subsystem
-- The bot generates an interactive Status embed (the "Panel") via `/monitor panel setup`. 
-- Inside `interactions.ts`, when a user presses a platform button (e.g., `monitor:poll:instagram:lisa_bp`), the bot evaluates `getConnectionMeta` via the SQLite DB.
-- If the current time is before the calculated `next_poll_at`, the interaction is rejected with an ephemeral "On cooldown" message.
+| Concern | Files |
+|--------|--------|
+| Poll → fetch → reviews | [`fetch.ts`](../src/handlers/monitor/fetch.ts) (large: feeds, APIs, review message creation) |
+| Slash + button dispatch | [`interactions.ts`](../src/handlers/monitor/interactions.ts) |
+| Panel embed & poll button | [`interactionPanel.ts`](../src/handlers/monitor/interactionPanel.ts) |
+| `/post` & duplicate confirmation | [`interactionPost.ts`](../src/handlers/monitor/interactionPost.ts) |
+| Review UI (edit / post / skip) | [`interactionReview.ts`](../src/handlers/monitor/interactionReview.ts) |
+| Ephemeral review state | [`review.ts`](../src/handlers/monitor/review.ts) |
+| Serialized post jobs | [`queue.ts`](../src/handlers/monitor/queue.ts) |
+| Persistence | [`db.ts`](../src/handlers/monitor/db.ts), [`schema.ts`](../src/handlers/monitor/schema.ts) |
 
-### 2. Fetching & Seen-Post Filtering
-- `fetch.ts` handles the API calls (Brightdata for Instagram, RapidAPI for TikTok).
-- The resulting posts are filtered against the local SQLite `seen_posts` table.
-- For each **new** post, a `ReviewState` object is created in memory (indexed by a unique `reviewId`).
+## Flow (short)
 
-### 3. The Interactive Review Workflow
-Each new post generates a "Review Message" in the panel channel. This message uses **Discord Components V2** (Text Displays and Media Galleries).
+1. **Panel** — `/monitor panel setup` (in `panel_channel_id`) posts/pins the embed; buttons use prefix `monitor:poll:` + connection id.
+2. **Cooldown** — [`getConnectionMeta`](../src/handlers/monitor/db.ts) vs `cooldown_seconds` on the connection.
+3. **Fetch** — [`fetchConnectionAndCreateReviews`](../src/handlers/monitor/fetch.ts) pulls new items, marks seen in the per-connection DB, creates review messages (Components V2).
+4. **Post from review** — [`handleReviewPost`](../src/handlers/monitor/interactionReview.ts) enqueues [`sendPostToChannel`](../src/utils/discord.ts) via [`enqueuePost`](../src/handlers/monitor/queue.ts).
 
-#### The State Lifecycle:
-1.  **Creation**: `fetch.ts` calls `createReview(state)`, storing buffers and metadata in a `Map` with a 1-hour TTL (Time-To-Live).
-2.  **Editing**: 
-    - Pressing **"Edit Text"** triggers `handleReviewEdit`, which shows a `ModalBuilder`.
-    - Submitting the modal triggers `handleReviewModalSubmit`, which updates the `customContent` in the in-memory state and refreshes the Discord message using `interaction.update()`.
-3.  **Image Management**:
-    - A `StringSelectMenu` allows users to toggle which images should be removed.
-    - `handleReviewRemove` updates the `removedIndices` set in the state. The UI is refreshed, showing the removed images as "spoilers" or hidden in the gallery.
-4.  **Finalizing (Post vs. Skip)**:
-    - **Skip**: `handleReviewSkip` purges the state and deletes the Discord message.
-    - **Post**: `handleReviewPost` executes the distribution logic (uploading to the socials channel, marking as seen in SQLite, and cleaning up memory).
+## Custom ID prefixes
 
-## Interactive UI: Custom ID Prefixes
+Defined in [`review.ts`](../src/handlers/monitor/review.ts). Add new prefixes there and handle them in [`interactions.ts`](../src/handlers/monitor/interactions.ts).
 
-If you are adding new buttons or modals, you must register a prefix in `src/handlers/monitor/review.ts` and add a case in the `handleInteraction` dispatcher.
+| Prefix | Handler (implementation module) |
+|--------|----------------------------------|
+| `monitor:poll:` | `handlePanelPollButton` — [`interactionPanel.ts`](../src/handlers/monitor/interactionPanel.ts) |
+| `monitor:review:remove:` | `handleReviewRemove` — [`interactionReview.ts`](../src/handlers/monitor/interactionReview.ts) |
+| `monitor:review:edit:` | `handleReviewEdit` |
+| `monitor:review:modal:` | `handleReviewModalSubmit` |
+| `monitor:review:post:` | `handleReviewPost` |
+| `monitor:review:skip:` | `handleReviewSkip` |
 
-| Prefix | Component Type | Handler Function | Purpose |
-| :--- | :--- | :--- | :--- |
-| `monitor:poll:` | Button | `handlePanelPollButton` | Triggers a fetch for a specific connection. |
-| `monitor:review:remove:` | Select Menu | `handleReviewRemove` | Toggles images to exclude from the final post. |
-| `monitor:review:edit:` | Button | `handleReviewEdit` | Opens the modal to edit post text. |
-| `monitor:review:modal:` | Modal | `handleReviewModalSubmit` | Saves edited text into the review state. |
-| `monitor:review:post:` | Button | `handleReviewPost` | Finalizes and distributes the post to socials. |
-| `monitor:review:skip:` | Button | `handleReviewSkip` | Discards the post and cleans up state. |
+## Database
 
-## Database Schema / State tracking
+- **Metadata DB** (`DB_PATH`, default `./data.db`): panel message pointer, connection-level last fetch.
+- **`connections-db/`**: one SQLite file per connection id — `seen_posts` (and related columns for posted message tracking).
 
-The SQLite database (`data.db`) maintains:
-1. `panel_messages`: Tracking where the active panel embed is located.
-2. `connection_meta`: Tracking the `last_fetched_at` timestamp and `last_fetched_by` user for cooldowns.
-3. `seen_posts`: Caching platform-specific `post_id`s to prevent duplicate distribution.
+Ops alerts for serious failures use [`opsAlert.ts`](../src/utils/opsAlert.ts) (`ALERT_DISCORD_USER_ID` optional).

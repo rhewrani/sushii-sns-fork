@@ -1,68 +1,43 @@
-# Supported Platforms
+# Supported platforms
 
-The bot is designed with a plugin-like architecture for adding various social media platforms. All platform downloaders live in the `src/platforms/` directory and extend an abstract `SnsDownloader<M>` base class found in `src/platforms/base.ts`.
+Platform code lives under [`src/platforms/`](../src/platforms/). Each downloader extends [`SnsDownloader<M>`](../src/platforms/base.ts) and returns [`PostData`](../src/platforms/base.ts) with buffers for the central handler to upload.
 
-## The `SnsDownloader` Base Class & The `PostData` Contract
+## Shared contract
 
-To safely ingest data into Discord, all plugins must compile website content into a standard `PostData` interface:
+1. **`PLATFORM`** — e.g. `twitter`, `instagram`, `instagram-story`, `tiktok`.
+2. **`URL_REGEX`** — finds URLs in message text.
+3. **`createLinkFromMatch`** — builds `SnsLink` metadata.
+4. **`buildApiRequest` / `fetchContent`** — call external APIs and download media.
+5. **`buildDiscordAttachments` / `buildDiscordMessages`** — chunk attachments and format captions with CDN URLs.
 
-```typescript
-export interface PostData<M extends SnsMetadata> {
-  postLink: SnsLink<M>;
-  username: string;
-  postID: string;
-  originalText: string;
-  timestamp?: Date;
-  files: { ext: string; buffer: Buffer }[]; 
-}
-```
+Downloaders are registered in [`sns.ts`](../src/handlers/sns.ts) (`findAllSnsLinks` uses all of them).
 
-By returning raw Buffers (`files`), the central handler module ensures the bot manages Discord upload limits globally rather than requiring each platform plugin to write Discord-specific batching code.
+## Twitter / X
 
-Every platform must implement the following core requirements:
+- **Path:** [`src/platforms/twitter/downloader.ts`](../src/platforms/twitter/downloader.ts)
+- **URLs:** `x.com` / `twitter.com` status links (`/user/status/id`, optional `/photo/n`).
+- **API:** `api.fxtwitter.com` (third-party JSON).
 
-1. **`PLATFORM` Identification**: E.g., `"twitter"`, `"instagram"`.
-2. **`URL_REGEX`**: A regular expression specific to the platform for finding valid URLs within Discord messages.
-3. **`createLinkFromMatch(match)`**: Converts a matched URL into an organized `SnsLink` metadata object.
-4. **`fetchContent(snsLink, progressFn)`**: Hits external APIs (Brightdata, RapidAPI, fxtwitter) to fetch metadata and return the array of `PostData`.
-5. **Discord Formatters**:
-   - `buildDiscordAttachments(postData)`: Splits raw Buffers into Discord `MessageCreateOptions` arrays chunked by Discord's limit (`MAX_ATTACHMENTS_PER_MESSAGE`).
-   - `buildDiscordMessages(postData, attachmentURLs)`: Constructs the textual post (injecting the CDN URLs for formatting).
+## Instagram posts & reels
 
-## Platform Implementations & Workflows
+- **Path:** [`src/platforms/instagram-post/downloader.ts`](../src/platforms/instagram-post/downloader.ts)
+- **URLs:** `/p/`, `/reel/`, `/reels/`, `/tv/`, and `user/reel/shortcode` style paths.
+- **API:** Bright Data datasets (async snapshot: trigger → poll → fetch).
 
-### 1. Twitter (X.com)
+## Instagram stories
 
-- **Location**: `src/platforms/twitter/downloader.ts`
-- **Workflow**:
-  - Matches `x.com/username/status/id` via regex.
-  - Builds a request hitting `api.fxtwitter.com` (a third-party scrape-friendly endpoint) instead of the heavily restricted official Twitter API.
-  - Parses the `TweetAPIResponse`, extracting the high-res images and MP4 URLs internally.
-  - Pushes those URLs into a generic internal buffer downloader (`this.downloadImages()`) and determines the appropriate file extensions based on the `fxtwitter` output.
+- **Path:** [`src/platforms/instagram-story/downloader.ts`](../src/platforms/instagram-story/downloader.ts)
+- **URLs:** `https://www.instagram.com/stories/{username}/{storyId}/` (not bare profile URLs).
+- **API:** RapidAPI (`instagram120.p.rapidapi.com`).
 
-### 2. Instagram Posts (and Reels)
+## TikTok
 
-- **Location**: `src/platforms/instagram-post/downloader.ts`
-- **Workflow**:
-  - Since Instagram blocks stateless requests natively, the bot relies on **Brightdata** (`api.brightdata.com`).
-  - Sends a `trigger` POST request with the Instagram dataset ID.
-  - Polls the snapshot endpoint until the scrape is `ready` (up to 120 seconds).
-  - Retrieves the scraped item mapping photos and videos, downloads the specific `mediaUrls` to buffers, and automatically converts iOS `.heic` arrays natively into JPEG buffers for Discord compatibility.
+- **Path:** [`src/platforms/tiktok/downloader.ts`](../src/platforms/tiktok/downloader.ts)
+- **URLs:** `tiktok.com/@user/video/{id}`.
+- **API:** RapidAPI (`tiktok-best-experience.p.rapidapi.com`).
 
-### 3. Instagram Stories
+## Adding a platform
 
-- **Location**: `src/platforms/instagram-story/downloader.ts`
-- **Workflow**: Identifies story URLs and heavily relies on metadata logic (since stories require distinct API endpoints compared to normal posts) fetching from RapidAPI endpoints (`instagram120.p.rapidapi.com`).
-
-### 4. TikTok
-
-- **Location**: `src/platforms/tiktok/downloader.ts`
-- **Workflow**: Handles both standard URLs and shortened `vm.tiktok` links. Utilizes RapidAPI (`tiktok-best-experience.p.rapidapi.com`) to query the exact `aweme_id`, which then provides a direct download link to either the watermarked or watermark-free MP4 address.
-
-## Adding a New Platform
-
-To add a new platform:
-1. Create a new folder in `src/platforms/` (e.g., `youtube`).
-2. Create `downloader.ts` containing a subclass extending `SnsDownloader<Metadata>`.
-3. Provide the regex and implement `buildApiRequest` / `fetchContent`.
-4. Register your class instance in the `downloaders` array internally inside `src/handlers/sns.ts`.
+1. Add `src/platforms/<name>/downloader.ts` + types if needed.
+2. Extend `SnsMetadata` / `Platform` in [`base.ts`](../src/platforms/base.ts) if required.
+3. Register the downloader in the `downloaders` array in [`sns.ts`](../src/handlers/sns.ts).
