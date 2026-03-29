@@ -5,7 +5,8 @@
   "scripts": {
     "typecheck": "tsc --skipLibCheck",
     "start": "bun run ./src/index.ts",
-    "dev": "bun src/index.ts | pino-pretty -c -t"
+    "dev": "bun src/index.ts | pino-pretty -c -t",
+    "test": "bun test"
   },
   "devDependencies": {
     "@types/bun": "latest",

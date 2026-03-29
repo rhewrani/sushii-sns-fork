@@ -32,6 +32,14 @@ describe("TwitterDownloader.findUrls", () => {
     expect(links).toHaveLength(1);
   });
 
+  it("matches m. short subdomain on x.com", () => {
+    const links = dl.findUrls(
+      "dl https://m.x.com/user/status/999888777",
+    );
+    expect(links).toHaveLength(1);
+    expect(links[0].metadata.id).toBe("999888777");
+  });
+
   it("matches URL with photo suffix", () => {
     const links = dl.findUrls(
       "dl https://x.com/user/status/1234567890/photo/1",
