@@ -110,7 +110,7 @@ export function buildPanelEmbed(
 
   const embed = new EmbedBuilder()
     .setColor(0xe1306c)
-    .setTitle("📡 SNS Monitor Panel")
+    .setTitle("📡 LISA SNS Panel")
     .setDescription("Click a Poll button to fetch the latest posts for that connection.");
 
   const fields = connections.map((c) => {
