@@ -1,4 +1,5 @@
 import { sleep } from "bun";
+import { ApiUsageEndpoint, recordApiUsage } from "../../apiUsage";
 import {
   AttachmentBuilder,
   MessageFlags,
@@ -80,6 +81,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
     let resParsed: BdMonitorResponse;
     while (true) {
       const res = await fetch(req);
+      recordApiUsage(ApiUsageEndpoint.BRIGHTDATA_PROGRESS);
 
       // Might be too fast, retry at least 5 times
       if (res.status === 404) {
@@ -155,6 +157,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
       );
 
       const response = await fetch(req);
+      recordApiUsage(ApiUsageEndpoint.BRIGHTDATA_SNAPSHOT);
 
       // Might be too fast, "Snapshot is building, try again in 30s"
       if (response.status === 202) {
@@ -242,6 +245,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
     progressCallback?.("Fetching IG data via RapidAPI...");
 
     const response = await fetch(req);
+    recordApiUsage(ApiUsageEndpoint.RAPIDAPI_IG120_MEDIA_BY_SHORTCODE);
     if (!response.ok) {
       throw new Error(
         `RapidAPI mediaByShortcode failed (${response.status})`,
@@ -304,6 +308,7 @@ export class InstagramPostDownloader extends SnsDownloader<InstagramMetadata> {
   ): Promise<PostData<InstagramMetadata>[]> {
     const req = this.buildApiRequest(snsLink);
     const response = await fetch(req);
+    recordApiUsage(ApiUsageEndpoint.BRIGHTDATA_TRIGGER);
 
     if (response.status !== 200) {
       log.error(

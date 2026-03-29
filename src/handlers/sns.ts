@@ -10,10 +10,53 @@ import {
 } from "../platforms/base";
 import { InstagramPostDownloader } from "../platforms/instagram-post/downloader";
 import { InstagramStoryDownloader } from "../platforms/instagram-story/downloader";
+import { StoryUnavailableError } from "../platforms/instagram-story/errors";
 import { TikTokDownloader } from "../platforms/tiktok/downloader";
 import { TwitterDownloader } from "../platforms/twitter/downloader";
+import { sendOpsAlert } from "../utils/opsAlert";
 
 const log = logger.child({ module: "snsHandler" });
+
+function formatSnsErrorForUser(err: unknown): string {
+  if (err instanceof StoryUnavailableError) {
+    return err.message;
+  }
+
+  if (err instanceof AggregateError) {
+    const storyErr = err.errors.find(
+      (e): e is StoryUnavailableError => e instanceof StoryUnavailableError,
+    );
+    if (storyErr) {
+      return storyErr.message;
+    }
+    const messages = err.errors.map((e) =>
+      e instanceof Error ? e.message : String(e),
+    );
+    const joined = messages.join(" ");
+    if (
+      joined.includes("No Instagram stories found") ||
+      joined.includes("Failed to fetch ig API story")
+    ) {
+      return (
+        "That Instagram story is no longer available. Stories expire after about 24 hours, " +
+        "or the link may be invalid."
+      );
+    }
+    return `Download failed: ${messages.join("; ")}`;
+  }
+
+  if (err instanceof Error) {
+    return err.message;
+  }
+
+  return String(err);
+}
+
+/** True when every provider failed (AggregateError) and it is not only expired-story cases. */
+function shouldAlertOpsForSnsFailure(err: unknown): boolean {
+  if (!(err instanceof AggregateError)) return false;
+  return !err.errors.every((e) => e instanceof StoryUnavailableError);
+}
 
 const downloaders = [
   new TwitterDownloader(),
@@ -166,8 +209,18 @@ export async function snsHandler(msg: Message<true>): Promise<void> {
   } catch (err) {
     const { requestBody: _body, ...safeErr } = (err as any) ?? {};
     logger.error(safeErr, "failed to process sns message");
-    let errMsg = "oops borked the download, pls try again!!";
-    errMsg += `\n\nError: ${err}\n`;
+    const detail = formatSnsErrorForUser(err);
+    const errMsg = `oops borked the download, pls try again!!\n\n${detail}`;
+
+    if (msg.channel.isSendable() && shouldAlertOpsForSnsFailure(err)) {
+      await sendOpsAlert(
+        msg.channel,
+        "SNS download: all providers failed",
+        err,
+        `Summary for chat: ${detail}\nMessage: ${msg.url}`,
+      );
+      return;
+    }
 
     await msg.channel.send(errMsg);
   }

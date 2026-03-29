@@ -23,6 +23,9 @@ const schema = z.object({
 
   MONITORS_CONFIG_PATH: z.string().optional(),
   DB_PATH: z.string().optional().default("./data.db"),
+
+  /** Discord user ID to @mention on public ops alerts (override to disable: set empty). */
+  ALERT_DISCORD_USER_ID: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

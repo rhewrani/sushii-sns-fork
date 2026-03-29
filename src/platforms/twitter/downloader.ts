@@ -5,6 +5,7 @@ import {
 } from "discord.js";
 import logger from "../../logger";
 import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
+import { ApiUsageEndpoint, recordApiUsage } from "../../apiUsage";
 import { fetchWithHeaders, getFileExtFromURL } from "../../utils/http";
 import type { TweetAPIResponse } from "./types";
 import {
@@ -59,6 +60,7 @@ export class TwitterDownloader extends SnsDownloader<TwitterMetadata> {
   ): Promise<PostData<TwitterMetadata>[]> {
     const req = this.buildApiRequest(snsLink);
     const response = await fetchWithHeaders(req);
+    recordApiUsage(ApiUsageEndpoint.FXTWITTER_STATUS);
 
     let tweetRes: TweetAPIResponse;
     try {

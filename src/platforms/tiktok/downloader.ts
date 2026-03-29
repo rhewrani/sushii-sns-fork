@@ -4,6 +4,7 @@ import {
   MessageFlags,
   type MessageCreateOptions,
 } from "discord.js";
+import { ApiUsageEndpoint, recordApiUsage } from "../../apiUsage";
 import logger from "../../logger";
 import { chunkArray, formatDiscordTitle, itemsToMessageContents, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import { buildLinksFormatMessages } from "../../utils/template";
@@ -64,6 +65,7 @@ export class TikTokDownloader extends SnsDownloader<TikTokMetadata> {
   ): Promise<PostData<TikTokMetadata>[]> {
     const req = this.buildApiRequest(snsLink);
     const response = await fetch(req);
+    recordApiUsage(ApiUsageEndpoint.RAPIDAPI_TIKTOK_BEST_VIDEO);
 
     if (response.status !== 200) {
       log.error(

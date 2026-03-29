@@ -6,6 +6,8 @@ import config from "./config/config";
 import { loadServerConfig } from "./config/server_config";
 import { MessageCreateHandler } from "./handlers/MessageCreate";
 import { registerSlashCommands } from "./handlers/monitor/commands";
+import { handleUsageSlash } from "./handlers/usageSlash";
+import type { MonitorsConfig } from "./handlers/monitor/config";
 import { loadMonitorsConfig } from "./handlers/monitor/config";
 import { openMetadataDb } from "./handlers/monitor/db";
 import { handleInteraction } from "./handlers/monitor/interactions";
@@ -127,18 +129,48 @@ async function main(): Promise<void> {
     await MessageCreateHandler(message);
   });
 
-  if (config.MONITORS_CONFIG_PATH) {
-    const monitorsConfigPath = config.MONITORS_CONFIG_PATH;
-    let monitorsConfig = loadMonitorsConfig(monitorsConfigPath);
-    const monitorDb = openMetadataDb(config.DB_PATH);
-    const reloadMonitorsConfig = () => {
-      monitorsConfig = loadMonitorsConfig(monitorsConfigPath);
-      return monitorsConfig;
-    };
+  await registerSlashCommands(config.APPLICATION_ID, config.DISCORD_TOKEN);
 
-    await registerSlashCommands(config.APPLICATION_ID, config.DISCORD_TOKEN);
+  const monitorsConfigPath = config.MONITORS_CONFIG_PATH;
+  let monitorsConfig: MonitorsConfig | null = monitorsConfigPath
+    ? loadMonitorsConfig(monitorsConfigPath)
+    : null;
+  const monitorDb = monitorsConfigPath ? openMetadataDb(config.DB_PATH) : null;
+  const reloadMonitorsConfig = (): MonitorsConfig => {
+    if (!monitorsConfigPath) {
+      throw new Error("MONITORS_CONFIG_PATH not set");
+    }
+    monitorsConfig = loadMonitorsConfig(monitorsConfigPath);
+    return monitorsConfig;
+  };
 
-    client.on(Events.InteractionCreate, async (interaction) => {
+  if (monitorsConfigPath && monitorsConfig) {
+    log.info(
+      { connections: monitorsConfig.connections.length },
+      "Monitor feature enabled",
+    );
+  }
+
+  client.on(Events.InteractionCreate, async (interaction) => {
+    if (interaction.isChatInputCommand() && interaction.commandName === "usage") {
+      await handleUsageSlash(interaction);
+      return;
+    }
+
+    if (
+      interaction.isChatInputCommand() &&
+      interaction.commandName === "fetch-all" &&
+      !monitorsConfigPath
+    ) {
+      await interaction.reply({
+        content:
+          "The monitor feature is not enabled (set MONITORS_CONFIG_PATH). `/fetch-all` is unavailable.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (monitorsConfigPath && monitorDb && monitorsConfig) {
       await handleInteraction(
         interaction,
         client,
@@ -148,13 +180,8 @@ async function main(): Promise<void> {
         monitorsConfigPath,
         reloadMonitorsConfig,
       );
-    });
-
-    log.info(
-      { connections: monitorsConfig.connections.length },
-      "Monitor feature enabled",
-    );
-  }
+    }
+  });
 
   const httpServer = await startHealthCheckServer(client);
   log.info({ port: httpServer.port }, "Health check server started");

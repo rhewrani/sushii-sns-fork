@@ -5,6 +5,7 @@ import {
   type Client,
   type SendableChannels,
 } from "discord.js";
+import { ApiUsageEndpoint, recordApiUsage } from "../../apiUsage";
 import config from "../../config/config";
 import type { ServerConfig } from "../../config/server_config";
 import logger from "../../logger";
@@ -18,11 +19,12 @@ import {
 import type { AnySnsMetadata, InstagramMetadata, PostData } from "../../platforms/base";
 import { tryWithFallbacks } from "../../utils/fallback";
 import { getFileExtFromURL } from "../../utils/http";
+import { sendOpsAlert } from "../../utils/opsAlert";
 import { convertHeicToJpeg } from "../../utils/heic";
 import { chunkArray, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import { buildInlineFormatContent } from "../../utils/template";
 import type { MonitorsConfig } from "./config";
-import { findConnectionById } from "./config";
+import { findConnectionById, getConnectionId } from "./config";
 import { isDevMode, loadMockJson } from "./runtime";
 import {
   isPostSeen,
@@ -47,6 +49,8 @@ async function fetchInstagramConnectionPosts(
     isPostSeen?: (id: string) => boolean;
     markPostSeen?: (id: string) => void;
     limit?: number;
+    /** If true, story items are marked seen without downloading media */
+    storiesMarkSeenOnly?: boolean;
   },
 ): Promise<PostData<AnySnsMetadata>[]> {
   const [profilePosts, storyPosts] = await Promise.all([
@@ -237,6 +241,7 @@ async function fetchIgProfilePostsViaRapidApi120(
     );
 
     const res = await fetch(req);
+    recordApiUsage(ApiUsageEndpoint.RAPIDAPI_IG120_POSTS);
     if (!res.ok) {
       let errorBody: string | object = "Unknown error";
       try {
@@ -435,6 +440,7 @@ async function fetchIgProfilePostsViaRapidApiLooter(
     );
 
     const res = await fetch(req);
+    recordApiUsage(ApiUsageEndpoint.RAPIDAPI_IG_LOOTER_USER_FEEDS2);
     if (!res.ok) {
       // Capture the actual error message from RapidAPI
       let errorBody: string | object = "Unknown error";
@@ -656,6 +662,7 @@ async function fetchInstagramStories(
   options?: {
     isPostSeen?: (id: string) => boolean;
     markPostSeen?: (id: string) => void;
+    storiesMarkSeenOnly?: boolean;
   },
 ): Promise<PostData<AnySnsMetadata>[]> {
   return tryWithFallbacks([
@@ -671,12 +678,13 @@ async function fetchInstagramStoriesViaRapidApi(
   options?: {
     isPostSeen?: (id: string) => boolean;
     markPostSeen?: (id: string) => void;
+    storiesMarkSeenOnly?: boolean;
   },
 ): Promise<PostData<AnySnsMetadata>[]> {
   if (isDevMode()) {
     const mock = loadMockJson<any>("instagram-stories.json");
     const items: any[] = Array.isArray(mock?.result) ? mock.result : [];
-    return buildStoryPostDataFromRapidApi(igUsername, items);
+    return buildStoryPostDataFromRapidApi(igUsername, items, options);
   }
 
   const req = new Request(
@@ -693,6 +701,7 @@ async function fetchInstagramStoriesViaRapidApi(
   );
 
   const res = await fetch(req);
+  recordApiUsage(ApiUsageEndpoint.RAPIDAPI_IG120_STORIES_FEED);
   if (!res.ok) {
     throw new Error(`Failed to fetch instagram stories (${res.status})`);
   }
@@ -719,9 +728,22 @@ async function buildStoryPostDataFromRapidApi(
   options?: {
     isPostSeen?: (id: string) => boolean;
     markPostSeen?: (id: string) => void;
+    storiesMarkSeenOnly?: boolean;
   },
 ): Promise<PostData<AnySnsMetadata>[]> {
-  const { isPostSeen, markPostSeen } = options ?? {};
+  const { isPostSeen, markPostSeen, storiesMarkSeenOnly } = options ?? {};
+
+  if (storiesMarkSeenOnly) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const storyId = String(item?.id ?? item?.pk ?? `story-${igUsername}-${i}`);
+      const postID = `ig-story:${igUsername}:${storyId}`;
+      if (isPostSeen?.(postID)) continue;
+      markPostSeen?.(postID);
+    }
+    return [];
+  }
+
   const out: PostData<AnySnsMetadata>[] = [];
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -826,6 +848,7 @@ async function fetchTiktokFeedRapidApiBestExperience(
   );
 
   const res = await fetch(req);
+  recordApiUsage(ApiUsageEndpoint.RAPIDAPI_TIKTOK_BEST_USER_FEED);
   if (!res.ok) {
     throw new Error(`Failed to fetch tiktok feed (${res.status})`);
   }
@@ -864,8 +887,6 @@ async function buildTiktokPostDataFromRapidApiBestExperience(
     ? json.data.aweme_list
     : [];
 
-  console.log("Tiktok feed aweme list", awemeList);
-
   const unseenAwemes = awemeList.filter(aweme => {
     const id = String(aweme?.aweme_id ?? "");
     return !id || !isPostSeen?.(id);
@@ -877,8 +898,6 @@ async function buildTiktokPostDataFromRapidApiBestExperience(
   }
 
   const toProcess = unseenAwemes.slice(0, limit);
-
-  console.log("Tiktok posts to process", toProcess);
 
   const out: PostData<AnySnsMetadata>[] = [];
   for (const aweme of toProcess) {
@@ -958,6 +977,7 @@ async function fetchTiktokFeedRapidApi2(
   );
 
   const res = await fetch(req);
+  recordApiUsage(ApiUsageEndpoint.RAPIDAPI_TIKTOK_API6_USER_VIDEOS);
   if (!res.ok) {
     throw new Error(`Failed to fetch tiktok feed (${res.status})`);
   }
@@ -1085,6 +1105,7 @@ async function fetchTwitterFeedRapidApi(
   );
 
   const res = await fetch(req);
+  recordApiUsage(ApiUsageEndpoint.RAPIDAPI_TWITTER45_TIMELINE);
   if (!res.ok) {
     throw new Error(`Failed to fetch twitter feed (${res.status})`);
   }
@@ -1229,7 +1250,18 @@ export async function fetchConnectionAndCreateReviews(
         });
       } catch (err) {
         log.error({ err, igUsername: connection.handle }, "Failed to fetch Instagram connection");
-        await interaction.editReply("Failed to fetch Instagram posts/stories. Please try again.");
+        await interaction.editReply(
+          "Failed to fetch Instagram posts/stories. Please try again. Details were posted in this channel.",
+        );
+        const pollChannel = interaction.channel;
+        if (pollChannel?.isSendable() && err instanceof AggregateError) {
+          await sendOpsAlert(
+            pollChannel,
+            `Monitor poll failed — Instagram @${connection.handle}`,
+            err,
+            `Connection: \`${connectionId}\``,
+          );
+        }
         return;
       }
     } else if (connection.type === "tiktok") {
@@ -1241,7 +1273,18 @@ export async function fetchConnectionAndCreateReviews(
         });
       } catch (err) {
         log.error({ err, handle: connection.handle }, "Failed to fetch TikTok feed");
-        await interaction.editReply("Failed to fetch TikTok feed. Please try again.");
+        await interaction.editReply(
+          "Failed to fetch TikTok feed. Please try again. Details were posted in this channel.",
+        );
+        const pollChannel = interaction.channel;
+        if (pollChannel?.isSendable() && err instanceof AggregateError) {
+          await sendOpsAlert(
+            pollChannel,
+            `Monitor poll failed — TikTok @${connection.handle}`,
+            err,
+            `Connection: \`${connectionId}\``,
+          );
+        }
         return;
       }
     } else if (connection.type === "twitter") {
@@ -1253,7 +1296,18 @@ export async function fetchConnectionAndCreateReviews(
         });
       } catch (err) {
         log.error({ err, handle: connection.handle }, "Failed to fetch Twitter feed");
-        await interaction.editReply("Failed to fetch Twitter feed. Please try again.");
+        await interaction.editReply(
+          "Failed to fetch Twitter feed. Please try again. Details were posted in this channel.",
+        );
+        const pollChannel = interaction.channel;
+        if (pollChannel?.isSendable() && err instanceof AggregateError) {
+          await sendOpsAlert(
+            pollChannel,
+            `Monitor poll failed — Twitter @${connection.handle}`,
+            err,
+            `Connection: \`${connectionId}\``,
+          );
+        }
         return;
       }
     }
@@ -1367,6 +1421,58 @@ export async function fetchConnectionAndCreateReviews(
     }
   } finally {
     fetchingInProgress.delete(connectionId);
+  }
+}
+
+/**
+ * Polls every monitor connection: marks all current feed/story items as seen without
+ * creating review messages or downloading media (except API calls required to list items).
+ * Updates last-fetch metadata per connection.
+ */
+export async function syncAllMonitorConnections(
+  monitorsConfig: MonitorsConfig,
+  metadataDb: Database,
+  opts?: { lastFetchedBy?: string },
+): Promise<void> {
+  const lastFetchedBy = opts?.lastFetchedBy ?? "fetch-all";
+  const now = Date.now();
+
+  for (const connection of monitorsConfig.connections) {
+    const connectionId = getConnectionId(connection);
+    const connectionDb = getConnectionDb(connectionId);
+
+    const shared = {
+      isPostSeen: (id: string) => isPostSeen(connectionDb, id),
+      markPostSeen: (id: string) => markPostSeen(connectionDb, id),
+    };
+
+    try {
+      if (connection.type === "instagram") {
+        if (!connection.igId) {
+          log.warn({ connectionId }, "fetch-all: skipping Instagram connection without igId");
+          continue;
+        }
+        await fetchInstagramConnectionPosts(connection.handle, connection.igId, {
+          ...shared,
+          limit: 0,
+          storiesMarkSeenOnly: true,
+        });
+      } else if (connection.type === "tiktok") {
+        await fetchTiktokFeed(connection.handle, {
+          ...shared,
+          limit: 0,
+        });
+      } else if (connection.type === "twitter") {
+        await fetchTwitterFeedRapidApi(connection.handle, {
+          ...shared,
+          limit: 0,
+        });
+      }
+
+      upsertConnectionMeta(metadataDb, connectionId, now, lastFetchedBy);
+    } catch (err) {
+      log.error({ err, connectionId }, "fetch-all: connection sync failed");
+    }
   }
 }
 

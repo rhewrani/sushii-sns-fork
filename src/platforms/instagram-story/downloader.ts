@@ -8,7 +8,9 @@ import logger from "../../logger";
 import { chunkArray, formatDiscordTitle, itemsToMessageContents, KST_TIMEZONE, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
 import { getFileExtFromURL } from "../../utils/http";
 import { convertHeicToJpeg } from "../../utils/heic";
+import { ApiUsageEndpoint, recordApiUsage } from "../../apiUsage";
 import { tryWithFallbacks } from "../../utils/fallback";
+import { StoryUnavailableError } from "./errors";
 import { buildLinksFormatMessages } from "../../utils/template";
 import {
   SnsDownloader,
@@ -80,18 +82,22 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
   ): Promise<PostData<InstagramMetadata>[]> {
     const req = this.buildApiRequest(snsLink);
     const response = await fetch(req);
+    recordApiUsage(ApiUsageEndpoint.RAPIDAPI_IG120_STORY_SINGLE);
 
     if (response.status !== 200) {
+      const body = await response.text();
       log.error(
         {
           request: req.headers,
           responseCode: response.status,
-          responseBody: await response.text(),
+          responseBody: body,
         },
         "Failed to fetch ig API story response",
       );
 
-      throw new Error("Failed to fetch ig API story response");
+      throw new StoryUnavailableError(
+        "This Instagram story is no longer available. Stories expire after about 24 hours, or the link may be invalid.",
+      );
     }
 
     let igStoriesRes: IgStories;
@@ -110,7 +116,9 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
         },
         "Failed to parse ig API response",
       );
-      throw new Error("Failed to parse ig JSON response");
+      throw new StoryUnavailableError(
+        "Could not read this Instagram story. It may have expired or been removed.",
+      );
     }
 
     log.debug(
@@ -121,7 +129,9 @@ export class InstagramStoryDownloader extends SnsDownloader<InstagramMetadata> {
     );
 
     if (!igStoriesRes.result || igStoriesRes.result.length === 0) {
-      throw new Error("No Instagram stories found");
+      throw new StoryUnavailableError(
+        "No story found at that link. Instagram stories expire after about 24 hours.",
+      );
     }
 
     progressCallback?.(

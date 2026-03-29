@@ -39,7 +39,10 @@ import {
   upsertPanelMessage,
 } from "./db";
 import { buildPanelEmbed, buildReviewBatches } from "./embed";
-import { fetchConnectionAndCreateReviews } from "./fetch";
+import {
+  fetchConnectionAndCreateReviews,
+  syncAllMonitorConnections,
+} from "./fetch";
 import { sendMonitorLog } from "./log_channel";
 import { enqueuePost } from "./queue";
 import {
@@ -57,6 +60,7 @@ import {
 import { findAllSnsLinks, snsService } from "../sns";
 import type { AnySnsMetadata, SnsLink } from "../../platforms/base";
 import { parseUsernameFromUrl } from "../links";
+import { sendOpsAlert } from "../../utils/opsAlert";
 
 const log = logger.child({ module: "monitor/interactions" });
 
@@ -199,7 +203,7 @@ function buildPanelConnectionsMeta(
   });
 }
 
-async function refreshPanelEmbed(
+export async function refreshPanelEmbed(
   client: Client,
   monitorsConfig: MonitorsConfig,
   metadataDb: Database,
@@ -879,6 +883,48 @@ export async function handleInteraction(
 
     if (interaction.isChatInputCommand()) {
       const cmd = interaction as ChatInputCommandInteraction;
+
+      if (cmd.commandName === "fetch-all") {
+        await cmd.deferReply({ ephemeral: true });
+
+        if (!cmd.guildId) {
+          await cmd.editReply({ content: "Must be used in a guild." });
+          return;
+        }
+
+        if (!cmd.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+          await cmd.editReply({
+            content: "You need Manage Server permission to use this command.",
+          });
+          return;
+        }
+
+        try {
+          await syncAllMonitorConnections(monitorsConfig, db, {
+            lastFetchedBy: cmd.user.username,
+          });
+          await refreshPanelEmbed(client, monitorsConfig, db);
+          await sendMonitorLog(
+            client,
+            monitorsConfig,
+            `/fetch-all completed by ${cmd.user.username}`,
+          );
+          await cmd.editReply({
+            content:
+              "Finished polling all connections (items marked as seen). Monitor panel updated.",
+          });
+        } catch (err) {
+          log.error(err, "/fetch-all failed");
+          await cmd.editReply({
+            content:
+              "Something went wrong while syncing. A public message was posted in this channel with details.",
+          });
+          if (cmd.channel?.isSendable()) {
+            await sendOpsAlert(cmd.channel, "/fetch-all command failed", err);
+          }
+        }
+        return;
+      }
 
       if (cmd.commandName !== "monitor" && cmd.commandName !== "post") return;
 
