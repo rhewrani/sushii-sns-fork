@@ -1,6 +1,7 @@
 import type { Server } from "bun";
 import { Client, Events, GatewayIntentBits, Status } from "discord.js";
 import { Hono } from "hono";
+import { logger as honoLogger } from "hono/logger";
 import config from "./config/config";
 import { loadServerConfig } from "./config/server_config";
 import { MessageCreateHandler } from "./handlers/MessageCreate";
@@ -14,17 +15,51 @@ import logger from "./logger";
 const log = logger.child({ module: "bot" });
 
 async function startHealthCheckServer(
-  healthyFn: () => boolean,
+  client: Client,
 ): Promise<Server<any>> {
   const app = new Hono();
+  const healthyFn = clientHealthy(client);
+
+  app.use("*", honoLogger());
 
   app.get("/", (c) => c.text("Hono!"));
+
   app.get("/v1/health", (c) => {
     if (healthyFn()) {
       return c.text("OK");
     }
-
     return c.text("NOT OK", 500);
+  });
+
+  app.get("/v1/ready", (c) => {
+    if (client.isReady()) {
+      return c.text("Ready");
+    }
+    return c.text("Not Ready", 503);
+  });
+
+  app.get("/v1/uptime", (c) => {
+    return c.json({
+      uptime_seconds: Math.floor(process.uptime()),
+      bot_uptime_ms: client.uptime,
+    });
+  });
+
+  app.get("/v1/status", (c) => {
+    const memory = process.memoryUsage();
+    return c.json({
+      status: healthyFn() ? "healthy" : "unhealthy",
+      ready: client.isReady(),
+      ping: client.ws.ping,
+      uptime: process.uptime(),
+      bot_uptime: client.uptime,
+      guilds: client.guilds.cache.size,
+      memory: {
+        rss: `${Math.round(memory.rss / 1024 / 1024)} MB`,
+        heapTotal: `${Math.round(memory.heapTotal / 1024 / 1024)} MB`,
+        heapUsed: `${Math.round(memory.heapUsed / 1024 / 1024)} MB`,
+      },
+    });
   });
 
   return Bun.serve({
@@ -121,7 +156,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const httpServer = await startHealthCheckServer(clientHealthy(client));
+  const httpServer = await startHealthCheckServer(client);
   log.info({ port: httpServer.port }, "Health check server started");
 
   process.on("SIGTERM", async () => {
