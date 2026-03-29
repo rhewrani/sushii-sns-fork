@@ -4,6 +4,7 @@ import utc from "dayjs/plugin/utc";
 import { platformToString, type AnySnsMetadata, type Platform, type PostData } from "../platforms/base";
 import {
   AttachmentBuilder,
+  ChannelType,
   MessageFlags,
   type Message,
   type SendableChannels,
@@ -18,6 +19,7 @@ dayjs.extend(timezone);
 
 export const KST_TIMEZONE = "Asia/Seoul";
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+export const MAX_BOT_UPLOAD_SIZE = 8 * 1024 * 1024; // 8MB
 
 export function formatDiscordTitle(
   platform: Platform,
@@ -76,6 +78,22 @@ export function chunkArray<T>(arr: T[], chunkSize: number): T[][] {
   return chunks;
 }
 
+export class MediaTooLargeError extends Error {
+  constructor(public readonly fileIndex: number, public readonly size: number) {
+    super(`File ${fileIndex} is ${(size / 1024 / 1024).toFixed(1)}MB, exceeds Discord's 8MB limit`);
+    this.name = "MediaTooLargeError";
+  }
+}
+
+function validateFileSizes(files: PostData<AnySnsMetadata>["files"]): void {
+  for (let i = 0; i < files.length; i++) {
+    const size = files[i].buffer.byteLength;
+    if (size > MAX_BOT_UPLOAD_SIZE) {
+      throw new MediaTooLargeError(i, size);
+    }
+  }
+}
+
 export interface SendPostOptions {
   format: "inline" | "links";
   template?: string;
@@ -110,6 +128,9 @@ export async function sendPostToChannel(
 ): Promise<SendPostResult> {
   const { format, template, prefix, suppressEmbeds = true, connectionDb, postId } = options;
   const files = postData.files;
+
+  validateFileSizes(files);
+
   const hasMedia = files.length > 0;
   const flags = (suppressEmbeds && hasMedia) ? MessageFlags.SuppressEmbeds : undefined;
 
@@ -138,11 +159,8 @@ export async function sendPostToChannel(
 
     if (chunks.length === 0) {
       // Text-only post
-      log.info(`Sending text-only post`);
       await sendAndTrack(suppressLinksInTextExceptLast?.(content) ?? content);
     } else {
-      // Send text first, then media chunks
-      log.info(`Sending text + media chunks`);
       await sendAndTrack(content);
       for (const chunk of chunks) {
         const sent = await channel.send({ files: chunk, flags });
@@ -183,9 +201,6 @@ export async function sendPostToChannel(
 
   if (connectionDb && postId && result.messageIds.length > 0) {
     try {
-      const rawPlatform = postData.postLink.metadata.platform;
-      const normalizedPlatform = rawPlatform.replace(/-story$/, "");
-      
       // Use INSERT OR REPLACE to handle both new posts and previously-seen-but-not-posted
       connectionDb.run(
         "INSERT OR REPLACE INTO seen_posts (post_id, seen_at, posted_message_id) VALUES (?, ?, ?)",
@@ -197,5 +212,17 @@ export async function sendPostToChannel(
       log.error(err, "Failed to track posted message ID in DB");
     }
   }
+
+  if (channel.type === ChannelType.GuildAnnouncement) {
+  await Promise.allSettled(
+    result.messages.map((m) =>
+      m.crosspost().catch((err) => {
+        const { requestBody: _body, ...safeErr } = (err as any) ?? {};
+        log.warn(safeErr, `Failed to crosspost message ${m.id}`);
+      })
+    )
+  );
+}
+
   return result;
 }

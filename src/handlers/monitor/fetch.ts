@@ -238,16 +238,13 @@ async function fetchIgProfilePostsViaRapidApi120(
 
     const res = await fetch(req);
     if (!res.ok) {
-      // Capture the actual error message from RapidAPI
       let errorBody: string | object = "Unknown error";
       try {
-        const clonedRes = res.clone(); // Clone so we can read body without consuming original
+        const clonedRes = res.clone();
         errorBody = await clonedRes.text();
-        // Try to parse as JSON for structured error info
         try {
           errorBody = JSON.parse(errorBody as string);
         } catch {
-          // Keep as text if not valid JSON
         }
       } catch {
         // Fallback if we can't read the body
@@ -1302,15 +1299,6 @@ export async function fetchConnectionAndCreateReviews(
       // For non-Instagram platforms, apply the cap to all posts (unchanged)
       postsToReview = newPosts.slice(0, MAX_REVIEWS_PER_POLL);
     }
-
-    console.log("Posts to review:", postsToReview.map(p => ({
-      id: p.postID,
-      fileCount: p.files.length,
-      text: p.originalText?.slice(0, 30),
-      platform: p.postLink?.metadata?.platform
-    })));
-
-    // NEW
 
     const socialsChannelId = monitorsConfig.socials_channel_id;
     let reviewCount = 0;

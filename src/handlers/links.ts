@@ -75,7 +75,7 @@ export async function extractLinksHandler(msg: Message<true>): Promise<void> {
   } catch (err) {
     log.error(err, "Failed to send links");
 
-    await msg.reply("oops couldnt get links, <@150443906511667200> fix me pls");
+    await msg.reply("oops couldnt get links, <@415912994698952706> fix me pls");
   }
 }
 

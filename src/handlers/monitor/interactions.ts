@@ -21,7 +21,7 @@ import {
 } from "discord.js";
 import { isConnectionMonitored, type ServerConfig } from "../../config/server_config";
 import logger from "../../logger";
-import { sendPostToChannel } from "../../utils/discord";
+import { MediaTooLargeError, sendPostToChannel } from "../../utils/discord";
 import type { MonitorsConfig } from "./config";
 import {
   findConnectionById,
@@ -159,6 +159,7 @@ async function handlePanelPollButton(
     if (!channel || !channel.isTextBased()) return;
 
     const msg = await channel.messages.fetch(panelMessage.message_id);
+
 
     const connectionsMeta = monitorsConfig.connections.map((c) => {
       const id = getConnectionId(c);
@@ -325,7 +326,7 @@ async function handleReviewRemove(
     return;
   }
 
-  // DEFER immediately to prevent "something went wrong"
+  await interaction.deferUpdate();
 
   const removedIndices = new Set(interaction.values.map(Number));
   updateReview(reviewId, { removedIndices });
@@ -404,6 +405,12 @@ async function handleReviewModalSubmit(
   await interaction.deferUpdate();
 
   const customContent = interaction.fields.getTextInputValue("content");
+  
+  const currentContent = state.customContent ?? state.renderedContent;
+  if (customContent === currentContent) {
+    return;
+  }
+  
   updateReview(reviewId, { customContent });
 
   const updatedState = getReview(reviewId)!;
@@ -412,24 +419,21 @@ async function handleReviewModalSubmit(
   const channel = interaction.channel;
   if (!channel) return;
 
-  // 2. Update all messages with proper Components V2 edit options
-  for (let i = 0; i < batches.length; i++) {
-    const msgId = updatedState.messageIds[i];
-    if (!msgId) continue;
+  const msgId = updatedState.messageIds[0];
+  if (!msgId) return;
 
-    try {
-      const msg = await channel.messages.fetch(msgId);
-      const editOptions = {
-        flags: MessageFlags.IsComponentsV2,
-        components: batches[i].components as any,
-        content: null,
-        embeds: [],
-      } as unknown as MessageEditOptions;
+  try {
+    const msg = await channel.messages.fetch(msgId);
+    const editOptions = {
+      flags: MessageFlags.IsComponentsV2,
+      components: batches[0].components as any,
+      content: null,
+      embeds: [],
+    } as unknown as MessageEditOptions;
 
-      await msg.edit(editOptions);
-    } catch (err) {
-      log.warn({ err, msgId }, "Failed to update review message");
-    }
+    await msg.edit(editOptions);
+  } catch (err) {
+    log.warn({ err, msgId }, "Failed to update review message");
   }
 }
 
@@ -789,7 +793,16 @@ async function handlePostCommand(
     await interaction.editReply(`✅ Post sent to socials channel!${jumpLink}`);
 
   } catch (err) {
-    logger.error(err, "/post command failed");
+    if (err instanceof MediaTooLargeError) {
+      await interaction.editReply(
+        `❌ Media file is too large to upload (${(err.size / 1024 / 1024).toFixed(1)}MB). Discord's limit is 8MB.\n` +
+        `View the post directly: ${postUrl}`
+      );
+      return;
+    }
+
+    const { requestBody: _body, ...safeErr } = (err as any) ?? {};
+    logger.error(safeErr, "/post command failed");
     await interaction.followUp({
       content: `❌ Error: ${String(err)}`,
       ephemeral: true,

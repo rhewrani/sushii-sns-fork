@@ -164,7 +164,8 @@ export async function snsHandler(msg: Message<true>): Promise<void> {
       }
     }
   } catch (err) {
-    logger.error(err, "failed to process sns message");
+    const { requestBody: _body, ...safeErr } = (err as any) ?? {};
+    logger.error(safeErr, "failed to process sns message");
     let errMsg = "oops borked the download, pls try again!!";
     errMsg += `\n\nError: ${err}\n`;
 
