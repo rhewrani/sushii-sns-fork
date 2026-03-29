@@ -793,12 +793,12 @@ async function fetchTiktokFeed(
 ): Promise<PostData<AnySnsMetadata>[]> {
   return tryWithFallbacks([
     {
-      name: "RapidAPI tiktok api",
-      fn: () => fetchTiktokFeedRapidApi2(igUsername, options),
-    },
-    {
       name: "RapidAPI best experience",
       fn: () => fetchTiktokFeedRapidApiBestExperience(igUsername, options),
+    },
+    {
+      name: "RapidAPI tiktok api",
+      fn: () => fetchTiktokFeedRapidApi2(igUsername, options),
     },
   ]);
 }
@@ -834,6 +834,22 @@ async function fetchTiktokFeedRapidApiBestExperience(
   }
 
   const json: any = await res.json();
+
+  const awemeList = json?.data?.aweme_list;
+  const isEmptyResponse = 
+    !Array.isArray(awemeList) || 
+    awemeList.length === 0 ||
+    json?.status !== "ok";
+
+  if (isEmptyResponse) {
+    log.warn(
+      { handle, status: json?.status, awemeCount: awemeList?.length },
+      "TikTok Best Experience API returned empty feed — triggering fallback"
+    );
+    // Throw to cascade to next fallback provider in tryWithFallbacks
+    throw new Error("TikTok Best Experience API returned empty aweme_list");
+  }
+
   return buildTiktokPostDataFromRapidApiBestExperience(handle, json, options);
 }
 

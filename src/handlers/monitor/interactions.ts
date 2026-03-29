@@ -401,7 +401,6 @@ async function handleReviewModalSubmit(
     return;
   }
 
-  // 1. DEFER immediately to prevent "something went wrong"
   await interaction.deferUpdate();
 
   const customContent = interaction.fields.getTextInputValue("content");
