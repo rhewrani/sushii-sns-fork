@@ -214,15 +214,17 @@ export async function sendPostToChannel(
   }
 
   if (channel.type === ChannelType.GuildAnnouncement) {
-  await Promise.allSettled(
-    result.messages.map((m) =>
-      m.crosspost().catch((err) => {
-        const { requestBody: _body, ...safeErr } = (err as any) ?? {};
-        log.warn(safeErr, `Failed to crosspost message ${m.id}`);
-      })
-    )
-  );
-}
+    // Do not await crosspost — it can be slow or stall while the message is already live.
+    // Awaiting it blocked the serialized review queue (~15s per post when we used a race timeout).
+    void Promise.allSettled(
+      result.messages.map((m) =>
+        m.crosspost().catch((err) => {
+          const { requestBody: _body, ...safeErr } = (err as any) ?? {};
+          log.warn(safeErr, `Failed to crosspost message ${m.id}`);
+        }),
+      ),
+    );
+  }
 
   return result;
 }

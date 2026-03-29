@@ -38,7 +38,11 @@ import {
   purgeConnectionSeenPosts,
   upsertPanelMessage,
 } from "./db";
-import { buildPanelEmbed, buildReviewBatches } from "./embed";
+import {
+  buildPanelEmbed,
+  buildReviewBatches,
+  buildReviewStatusEditOptions,
+} from "./embed";
 import {
   fetchConnectionAndCreateReviews,
   syncAllMonitorConnections,
@@ -86,14 +90,14 @@ async function handlePanelPollButton(
   if (interaction.channelId !== monitorsConfig.panel_channel_id) {
     await interaction.reply({
       content: "This button is only valid in the panel channel.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   const connection = findConnectionById(monitorsConfig, connectionId);
   if (!connection) {
-    await interaction.reply({ content: "Unknown connection.", ephemeral: true });
+    await interaction.reply({ content: "Unknown connection.", flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -101,7 +105,7 @@ async function handlePanelPollButton(
   if (monitorsConfig.trigger_role_id) {
     const member = interaction.member;
     if (!member) {
-      await interaction.reply({ content: "Could not verify your roles.", ephemeral: true });
+      await interaction.reply({ content: "Could not verify your roles.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -109,7 +113,7 @@ async function handlePanelPollButton(
     if (!roles || !roles.has(monitorsConfig.trigger_role_id)) {
       await interaction.reply({
         content: "You don't have the required role to poll.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -124,7 +128,7 @@ async function handlePanelPollButton(
       const nextPollSec = Math.floor(nextPollAt / 1000);
       await interaction.reply({
         content: `On cooldown. Next poll available <t:${nextPollSec}:R>.`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -133,7 +137,7 @@ async function handlePanelPollButton(
   if (pollInProgress.has(connectionId)) {
     await interaction.reply({
       content: "A poll is already running for this connection. Please wait.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -268,7 +272,7 @@ export async function promptRepostConfirmation(
   const confirmMsg = await interaction.followUp({
     content: `⚠️ This post was already sent to the socials channel.${existingPostLink}\n\nDo you want to post it again?`,
     components: [confirmRow],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 
   try {
@@ -367,14 +371,14 @@ async function handleReviewEdit(
 ): Promise<void> {
   const state = getReviewOrWarn(reviewId);
   if (!state) {
-    await interaction.reply({ content: "This review has expired.", ephemeral: true });
+    await interaction.reply({ content: "This review has expired.", flags: MessageFlags.Ephemeral });
     return;
   }
 
   if (interaction.user.id !== state.fetcherUserId) {
     await interaction.reply({
       content: "Only the person who triggered the fetch can interact.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -402,7 +406,7 @@ async function handleReviewModalSubmit(
 ): Promise<void> {
   const state = getReviewOrWarn(reviewId);
   if (!state) {
-    await interaction.reply({ content: "This review has expired.", ephemeral: true });
+    await interaction.reply({ content: "This review has expired.", flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -447,14 +451,14 @@ async function handleReviewPost(
 ): Promise<void> {
   const state = getReviewOrWarn(reviewId);
   if (!state) {
-    await interaction.reply({ content: "This review has expired.", ephemeral: true });
+    await interaction.reply({ content: "This review has expired.", flags: MessageFlags.Ephemeral });
     return;
   }
 
   if (interaction.user.id !== state.fetcherUserId) {
     await interaction.reply({
       content: "Only the person who triggered the fetch can interact.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -466,7 +470,7 @@ async function handleReviewPost(
   if (filteredFiles.length === 0 && state.postData.postLink.metadata.platform !== "twitter") {
     await interaction.reply({
       content: "No images selected. Re-add images before posting.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -492,11 +496,9 @@ async function handleReviewPost(
   if (lastMsgId) {
     try {
       const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-      await lastMsg.edit({
-        components: [new TextDisplayBuilder().setContent("⏳ Posting...")] as any,
-      });
+      await lastMsg.edit(buildReviewStatusEditOptions("⏳ Posting..."));
     } catch (err) {
-      // Ignore
+      log.warn({ err, lastMsgId }, "Failed to set review message to Posting state");
     }
   }
 
@@ -511,9 +513,9 @@ async function handleReviewPost(
       if (!channel || !channel.isTextBased() || !("send" in channel)) {
         if (lastMsgId) {
           const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-          await lastMsg.edit({
-            components: [new TextDisplayBuilder().setContent("❌ Failed - channel not sendable")] as any,
-          });
+          await lastMsg.edit(
+            buildReviewStatusEditOptions("❌ Failed - channel not sendable"),
+          );
         }
         return;
       }
@@ -540,10 +542,15 @@ async function handleReviewPost(
       if (lastMsgId) {
         try {
           const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-          await lastMsg.edit({
-            components: [new TextDisplayBuilder().setContent("❌ Failed to post")] as any,
-          });
-        } catch (e) { /* ignore */ }
+          const msg =
+            err instanceof Error &&
+            err.message.toLowerCase().includes("timed out")
+              ? "❌ Timeout while posting"
+              : "❌ Failed to post";
+          await lastMsg.edit(buildReviewStatusEditOptions(msg));
+        } catch (e) {
+          log.warn({ e, lastMsgId }, "Failed to edit review message after post error");
+        }
       }
       throw err; // Re-throw so queue knows it failed
     }
@@ -552,10 +559,10 @@ async function handleReviewPost(
       if (lastMsgId) {
         try {
           const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-          await lastMsg.edit({
-            components: [new TextDisplayBuilder().setContent("❌ Failed to post")] as any,
-          });
-        } catch (e) { /* ignore */ }
+          await lastMsg.edit(buildReviewStatusEditOptions("❌ Failed to post"));
+        } catch (e) {
+          log.warn({ e, lastMsgId }, "Failed to edit review message (not posted)");
+        }
       }
       return;
     }
@@ -566,9 +573,13 @@ async function handleReviewPost(
     if (lastMsgId) {
       try {
         const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-        await lastMsg.edit({
-          components: [new TextDisplayBuilder().setContent(`✅ Posted! https://discord.com/channels/${interaction.guildId}/${state.socialsChannelId}/${result?.messageIds[0]}`)] as any,
-        });
+        const guildId = interaction.guildId ?? lastMsg.guildId;
+        const firstId = result?.messageIds?.[0];
+        const postedLine =
+          guildId && firstId
+            ? `✅ Posted! https://discord.com/channels/${guildId}/${state.socialsChannelId}/${firstId}`
+            : "✅ Posted! (open the socials channel to see the message.)";
+        await lastMsg.edit(buildReviewStatusEditOptions(postedLine));
 
         setTimeout(async () => {
           try {
@@ -577,11 +588,13 @@ async function handleReviewPost(
             // Already deleted
           }
         }, 5000);
-
       } catch (err) {
+        log.warn({ err, lastMsgId }, "Failed to update review message to Posted state");
         try {
           await reviewChannel.messages.delete(lastMsgId);
-        } catch (e) { /* ignore */ }
+        } catch (e) {
+          /* ignore */
+        }
       }
     }
   }).catch(() => {
@@ -595,14 +608,14 @@ async function handleReviewSkip(
 ): Promise<void> {
   const state = getReviewOrWarn(reviewId);
   if (!state) {
-    await interaction.reply({ content: "This review has expired.", ephemeral: true });
+    await interaction.reply({ content: "This review has expired.", flags: MessageFlags.Ephemeral });
     return;
   }
 
   if (interaction.user.id !== state.fetcherUserId) {
     await interaction.reply({
       content: "Only the person who triggered the fetch can interact.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -630,9 +643,7 @@ async function handleReviewSkip(
   if (lastMsgId) {
     try {
       const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-      await lastMsg.edit({
-        components: [new TextDisplayBuilder().setContent("⏭️ Skipped")] as any,
-      });
+      await lastMsg.edit(buildReviewStatusEditOptions("⏭️ Skipped"));
 
       // 3. Delete after 5 seconds
       setTimeout(async () => {
@@ -809,7 +820,7 @@ async function handlePostCommand(
     logger.error(safeErr, "/post command failed");
     await interaction.followUp({
       content: `❌ Error: ${String(err)}`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 }
@@ -885,7 +896,7 @@ export async function handleInteraction(
       const cmd = interaction as ChatInputCommandInteraction;
 
       if (cmd.commandName === "fetch-all") {
-        await cmd.deferReply({ ephemeral: true });
+        await cmd.deferReply({ flags: MessageFlags.Ephemeral });
 
         if (!cmd.guildId) {
           await cmd.editReply({ content: "Must be used in a guild." });
@@ -929,7 +940,7 @@ export async function handleInteraction(
       if (cmd.commandName !== "monitor" && cmd.commandName !== "post") return;
 
       if (!cmd.guildId) {
-        await cmd.reply({ content: "Must be used in a guild.", ephemeral: true });
+        await cmd.reply({ content: "Must be used in a guild.", flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -937,7 +948,7 @@ export async function handleInteraction(
       if (!cmd.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
         await cmd.reply({
           content: "You need Manage Guild permission to use this command.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -951,7 +962,7 @@ export async function handleInteraction(
       const sub = cmd.options.getSubcommand(true);
 
       if (group === "panel" && sub === "setup") {
-        await cmd.deferReply({ ephemeral: true });
+        await cmd.deferReply({ flags: MessageFlags.Ephemeral });
 
         if (cmd.channelId !== monitorsConfig.panel_channel_id) {
           await cmd.editReply({
@@ -976,7 +987,7 @@ export async function handleInteraction(
       }
 
       if (group === "panel" && sub === "refresh") {
-        await cmd.deferReply({ ephemeral: true });
+        await cmd.deferReply({ flags: MessageFlags.Ephemeral });
 
         if (!(await refreshPanelEmbed(client, monitorsConfig, db))) {
           await cmd.editReply({ content: "Panel embed not found. Run panel setup first." });
@@ -988,7 +999,7 @@ export async function handleInteraction(
       }
 
       if (group === "db" && sub === "purge-connection") {
-        await cmd.deferReply({ ephemeral: true });
+        await cmd.deferReply({ flags: MessageFlags.Ephemeral });
 
         const type = cmd.options.getString("type", true);
         const handle = cmd.options.getString("handle", true);
@@ -1013,7 +1024,7 @@ export async function handleInteraction(
       }
 
       if (group === "db" && sub === "purge-all") {
-        await cmd.deferReply({ ephemeral: true });
+        await cmd.deferReply({ flags: MessageFlags.Ephemeral });
 
         try {
           purgeAllSeenPosts();
@@ -1038,9 +1049,9 @@ export async function handleInteraction(
     try {
       if (interaction.isRepliable() && !interaction.replied) {
         if (!interaction.deferred) {
-          await interaction.reply({ content: "An error occurred. Please try again.", ephemeral: true });
+          await interaction.reply({ content: "An error occurred. Please try again.", flags: MessageFlags.Ephemeral });
         } else {
-          await interaction.followUp({ content: "An error occurred. Please try again.", ephemeral: true });
+          await interaction.followUp({ content: "An error occurred. Please try again.", flags: MessageFlags.Ephemeral });
         }
       }
     } catch {

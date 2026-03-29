@@ -395,3 +395,18 @@ export function batchToEditOptions(
     // Note: files cannot be changed in edit, so we don't include them
   } as MessageEditOptions;
 }
+
+/**
+ * Edit a Components V2 review message down to a single status line (posting / posted / error).
+ * Must keep {@link MessageFlags.IsComponentsV2} or Discord rejects the edit and the UI can stay stuck.
+ */
+export function buildReviewStatusEditOptions(statusText: string): MessageEditOptions {
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    components: [new TextDisplayBuilder().setContent(statusText)] as MessageEditOptions["components"],
+    content: null,
+    embeds: [],
+    /** Drop review images/galleries so the status edit applies reliably */
+    attachments: [],
+  } as MessageEditOptions;
+}

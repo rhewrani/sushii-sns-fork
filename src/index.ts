@@ -1,5 +1,5 @@
 import type { Server } from "bun";
-import { Client, Events, GatewayIntentBits, Status } from "discord.js";
+import { Client, Events, GatewayIntentBits, MessageFlags, Status } from "discord.js";
 import { Hono } from "hono";
 import { logger as honoLogger } from "hono/logger";
 import config from "./config/config";
@@ -165,7 +165,7 @@ async function main(): Promise<void> {
       await interaction.reply({
         content:
           "The monitor feature is not enabled (set MONITORS_CONFIG_PATH). `/fetch-all` is unavailable.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }

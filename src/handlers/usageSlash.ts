@@ -1,4 +1,5 @@
 import {
+  MessageFlags,
   PermissionFlagsBits,
   type ChatInputCommandInteraction,
 } from "discord.js";
@@ -18,7 +19,7 @@ export async function handleUsageSlash(
     if (!interaction.guildId) {
       await interaction.reply({
         content: "This command must be used in a server.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -26,7 +27,7 @@ export async function handleUsageSlash(
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
       await interaction.reply({
         content: "You need Manage Server permission to use this command.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -47,19 +48,19 @@ export async function handleUsageSlash(
         body = formatUsageAllMessage();
     }
 
-    await interaction.reply({ content: body, ephemeral: true });
+    await interaction.reply({ content: body, flags: MessageFlags.Ephemeral });
   } catch (err) {
     log.error(err, "usage slash command failed");
     try {
       if (interaction.deferred || interaction.replied) {
         await interaction.followUp({
           content: "Could not load usage stats.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       } else {
         await interaction.reply({
           content: "Could not load usage stats.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
     } catch {

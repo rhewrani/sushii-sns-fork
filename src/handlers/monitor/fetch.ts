@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
   AttachmentBuilder,
+  MessageFlags,
   type ButtonInteraction,
   type Client,
   type SendableChannels,
@@ -1213,7 +1214,7 @@ export async function fetchConnectionAndCreateReviews(
   metadataDb: Database,
   connectionId: string,
 ): Promise<void> {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const connection = findConnectionById(monitorsConfig, connectionId);
   if (!connection) {

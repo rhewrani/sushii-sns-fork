@@ -1,3 +1,7 @@
+import logger from "../../logger";
+
+const log = logger.child({ module: "monitor/queue" });
+
 interface QueueItem {
   id: string;
   execute: () => Promise<void>;
@@ -8,24 +12,56 @@ interface QueueItem {
 const postQueue: QueueItem[] = [];
 let isProcessing = false;
 
+const POST_JOB_TIMEOUT_MS = 90_000;
+
+function withTimeout<T>(
+  p: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 async function processQueue() {
   if (isProcessing || postQueue.length === 0) return;
   isProcessing = true;
 
   const item = postQueue.shift();
-  if (item) {
-    try {
-      await item.execute();
-      item.resolve();
-    } catch (err) {
-      item.reject(err instanceof Error ? err : new Error(String(err)));
-    }
+  if (!item) {
+    isProcessing = false;
+    return;
   }
 
-  isProcessing = false;
-  // Process next if any
-  if (postQueue.length > 0) {
-    processQueue();
+  try {
+    log.debug({ queueItemId: item.id }, "Starting post queue job");
+    await withTimeout(item.execute(), POST_JOB_TIMEOUT_MS, "post job");
+    log.debug({ queueItemId: item.id }, "Finished post queue job");
+    item.resolve();
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    log.error({ err: error.message, queueItemId: item.id }, "Post queue job failed");
+    item.reject(error);
+  } finally {
+    isProcessing = false;
+    // Process next if any
+    if (postQueue.length > 0) {
+      processQueue();
+    }
   }
 }
 
