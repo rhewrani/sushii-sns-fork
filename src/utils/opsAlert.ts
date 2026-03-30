@@ -1,7 +1,7 @@
 import type { SendableChannels } from "discord.js";
 import config from "../config/config";
 
-const DEFAULT_ALERT_USER_ID = "415912994698952706";
+const DEFAULT_ALERT_USER_ID = "150443906511667200";
 
 /** Discord user ID for ops mentions (from `ALERT_DISCORD_USER_ID` or default). Empty env disables. */
 export function getOpsAlertUserId(): string | null {

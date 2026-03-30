@@ -1,8 +1,8 @@
 {
-  "panel_channel_id": "1485627529778958415",
-  "socials_channel_id": "1487113721812746341",
-  "log_channel_id": "1485628023410790490",
-  "trigger_role_id": "1485639060260262059",
+  "panel_channel_id": "",
+  "socials_channel_id": "",
+  "log_channel_id": "",
+  "trigger_role_id": "",
   "format": "inline",
   "template": "`{date_kst} {username} {platform} Update`\n{caption}\n\n{post_url}",
   "connections": [
@@ -10,28 +10,28 @@
       "type": "instagram",
       "handle": "lalalalisa_m",
       "igId": "8012033210",
-      "cooldown_seconds": 0
+      "cooldown_seconds": 3600
     },
     {
       "type": "instagram",
       "handle": "wearelloud",
       "igId": "64466054435",
-      "cooldown_seconds": 0
+      "cooldown_seconds": 3600
     },
     {
       "type": "tiktok",
       "handle": "lalalalisa_m",
-      "cooldown_seconds": 0
+      "cooldown_seconds": 3600
     },
     {
       "type": "tiktok",
       "handle": "wearelloud",
-      "cooldown_seconds": 0
+      "cooldown_seconds": 3600
     },
     {
       "type": "twitter",
       "handle": "wearelloud",
-      "cooldown_seconds": 0
+      "cooldown_seconds": 3600
     }
   ]
 }
