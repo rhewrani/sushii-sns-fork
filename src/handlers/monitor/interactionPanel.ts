@@ -21,7 +21,8 @@ const log = logger.child({ module: "monitor/interactionPanel" });
 // Panel poll + embed
 // ---------------------------------------------------------------------------
 
-const pollInProgress = new Set<string>();
+/** One panel poll at a time (any connection). Set before calling into `fetch`. */
+let panelPollInProgress = false;
 
 export async function handlePanelPollButton(
   interaction: ButtonInteraction,
@@ -38,10 +39,12 @@ export async function handlePanelPollButton(
     });
     return;
   }
-
-  const connection = findConnectionById(monitorsConfig, connectionId);
-  if (!connection) {
-    await interaction.reply({ content: "Unknown connection.", flags: MessageFlags.Ephemeral });
+  
+  if (panelPollInProgress) {
+    await interaction.reply({
+      content: "A fetch is already in progress. Please wait until it finishes.",
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
 
@@ -62,6 +65,13 @@ export async function handlePanelPollButton(
     }
   }
 
+  const connection = findConnectionById(monitorsConfig, connectionId);
+  if (!connection) {
+    await interaction.reply({ content: "Unknown connection.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+
   const lastFetch = getConnectionMeta(metadataDb, connectionId);
   if (lastFetch) {
     const nextPollAt =
@@ -76,15 +86,9 @@ export async function handlePanelPollButton(
     }
   }
 
-  if (pollInProgress.has(connectionId)) {
-    await interaction.reply({
-      content: "A poll is already running for this connection. Please wait.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
+  
 
-  pollInProgress.add(connectionId);
+  panelPollInProgress = true;
   try {
     await sendMonitorLog(
       client,
@@ -128,7 +132,7 @@ export async function handlePanelPollButton(
       `Poll finished: \`${connectionId}\` by ${interaction.user.username}`,
     );
   } finally {
-    pollInProgress.delete(connectionId);
+    panelPollInProgress = false;
   }
 }
 

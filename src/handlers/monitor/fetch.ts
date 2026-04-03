@@ -4,7 +4,6 @@
  */
 import type { Database } from "bun:sqlite";
 import {
-  AttachmentBuilder,
   MessageFlags,
   type ButtonInteraction,
   type Client,
@@ -16,10 +15,7 @@ import type { ServerConfig } from "../../config/server_config";
 import logger from "../../logger";
 import { InstagramPostDownloader } from "../../platforms/instagram-post/downloader";
 import {
-  BdTriggerResponseSchema,
-  RapidApiMediaResponseSchema,
   type InstagramPostElement,
-  type RapidApiMediaResponse,
 } from "../../platforms/instagram-post/types";
 import type { AnySnsMetadata, InstagramMetadata, PostData } from "../../platforms/base";
 import { tryWithFallbacks } from "../../utils/fallback";
@@ -43,9 +39,6 @@ import { createReview, deleteReview, type ReviewState } from "./review";
 const log = logger.child({ module: "monitor/fetch" });
 
 const downloader = new InstagramPostDownloader();
-
-// Guard against concurrent fetches for the same username (double-click race condition)
-const fetchingInProgress = new Set<string>();
 
 async function fetchInstagramConnectionPosts(
   igUsername: string,
@@ -1226,13 +1219,6 @@ export async function fetchConnectionAndCreateReviews(
     return;
   }
 
-  if (fetchingInProgress.has(connectionId)) {
-    await interaction.editReply("A poll is already running for this connection. Please wait.");
-    return;
-  }
-
-  fetchingInProgress.add(connectionId);
-  try {
     await interaction.editReply("Fetching latest posts...");
 
     const connectionDb = getConnectionDb(connectionId);
@@ -1424,9 +1410,6 @@ export async function fetchConnectionAndCreateReviews(
         `Found ${reviewCount} new post${reviewCount === 1 ? "" : "s"}. Review messages created below.`,
       );
     }
-  } finally {
-    fetchingInProgress.delete(connectionId);
-  }
 }
 
 /**

@@ -1,3 +1,6 @@
+/**
+ * Serializes **review "Post"** work.
+ */
 import logger from "../../logger";
 
 const log = logger.child({ module: "monitor/queue" });
