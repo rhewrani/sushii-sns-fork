@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   ActionRowBuilder,
   MessageFlags,
@@ -15,7 +14,8 @@ import type { AnySnsMetadata, SnsLink } from "../../platforms/base";
 import { MediaTooLargeError, sendPostToChannel } from "../../utils/discord";
 import { parseUsernameFromUrl } from "../../utils/socialUrls";
 import type { MonitorsConfig } from "./config";
-import { checkIfPostWasPosted } from "./db";
+import { connectionIdFromPlatformUsername } from "./connectionId";
+import type { MonitorRepository } from "./repository";
 import { findAllSnsLinks, snsService } from "../sns";
 
 const log = logger.child({ module: "monitor/interactionPost" });
@@ -120,7 +120,7 @@ function extractConnectionInfo(link: SnsLink<AnySnsMetadata>): {
 }
 
 async function checkDuplicateBeforeFetch(
-  metadataDb: Database,
+  monitorRepo: MonitorRepository,
   connectionId: string,
   postId: string,
   monitorsConfig: MonitorsConfig,
@@ -128,7 +128,7 @@ async function checkDuplicateBeforeFetch(
 ): Promise<boolean> {
   if (!isConnectionMonitored(monitorsConfig, connectionId)) return true;
 
-  const check = checkIfPostWasPosted(metadataDb, connectionId, postId);
+  const check = monitorRepo.checkIfPostWasPosted(connectionId, postId);
 
   if (check.wasPosted) {
     const result = await promptRepostConfirmation(
@@ -146,7 +146,7 @@ export async function handlePostCommand(
   monitorsConfig: MonitorsConfig,
   _serverConfig: ServerConfig | null,
   client: Client,
-  _db: Database,
+  monitorRepo: MonitorRepository,
 ): Promise<void> {
   await interaction.deferReply();
 
@@ -173,9 +173,9 @@ export async function handlePostCommand(
     const { username, postId, canCheckBeforeFetch } = extractConnectionInfo(link);
 
     if (canCheckBeforeFetch && username && postId) {
-      const preConnectionId = `${normalizedPlatform}:${username}`;
+      const preConnectionId = connectionIdFromPlatformUsername(normalizedPlatform, username);
       const confirmed = await checkDuplicateBeforeFetch(
-        _db,
+        monitorRepo,
         preConnectionId,
         postId,
         monitorsConfig,
@@ -195,10 +195,13 @@ export async function handlePostCommand(
     // problem with instagram POSTS: with format https://www.instagram.com/p/SHORTCODE/ we don't have the username and we cant check db
     // so we check AFTER sns downloader fetched all the data (I know not optimal)
     if ((platform === "instagram" || platform === "instagram-story") && postData.username) {
-      const igConnectionId = `${normalizedPlatform}:${postData.username}`;
+      const igConnectionId = connectionIdFromPlatformUsername(
+        normalizedPlatform,
+        postData.username,
+      );
       if (isConnectionMonitored(monitorsConfig, igConnectionId)) {
         const confirmed = await checkDuplicateBeforeFetch(
-          _db,
+          monitorRepo,
           igConnectionId,
           postData.postID,
           monitorsConfig,
@@ -211,18 +214,27 @@ export async function handlePostCommand(
     const trackInDb =
       (platform === "instagram" || platform === "instagram-story") &&
       !!postData.username &&
-      isConnectionMonitored(monitorsConfig, `${normalizedPlatform}:${postData.username}`);
+      isConnectionMonitored(
+        monitorsConfig,
+        connectionIdFromPlatformUsername(normalizedPlatform, postData.username),
+      );
 
     const connectionIdForDb = trackInDb
-      ? `${normalizedPlatform}:${postData.username}`
+      ? connectionIdFromPlatformUsername(normalizedPlatform, postData.username!)
       : undefined;
 
     const result = await sendPostToChannel(socialsChannel as SendableChannels, postData, {
       format: monitorsConfig.format,
       template: monitorsConfig.template,
-      metadataDb: trackInDb ? _db : undefined,
-      connectionId: connectionIdForDb,
-      postId: trackInDb ? postData.postID : undefined,
+      ...(trackInDb && connectionIdForDb && postData.postID
+        ? {
+            postTracking: {
+              connectionId: connectionIdForDb,
+              postId: postData.postID,
+              sink: monitorRepo,
+            },
+          }
+        : {}),
     });
 
     const jumpLink = result.messageIds[0]

@@ -14,7 +14,7 @@ import {
   type MessageEditOptions
 } from "discord.js";
 import { chunkArray, MAX_ATTACHMENTS_PER_MESSAGE } from "../../utils/discord";
-import type { LastFetch } from "./db";
+import type { LastFetch } from "./repository";
 import {
   MONITOR_FETCH_PREFIX,
   MONITOR_STATUS_PREFIX,

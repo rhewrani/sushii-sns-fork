@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   MessageFlags,
   type ButtonInteraction,
@@ -9,7 +8,7 @@ import {
 import logger from "../../logger";
 import type { MonitorsConfig } from "./config";
 import { findConnectionById, getConnectionId } from "./config";
-import { getConnectionMeta, getPanelMessage, upsertPanelMessage } from "./db";
+import type { MonitorRepository } from "./repository";
 import { buildPanelEmbed } from "./embed";
 import { fetchConnectionAndCreateReviews } from "./fetch";
 import { sendMonitorLog } from "./log_channel";
@@ -30,7 +29,7 @@ export async function handlePanelPollButton(
   monitorsConfig: MonitorsConfig,
   serverConfig: ServerConfig | null,
   client: Client,
-  metadataDb: Database,
+  monitorRepo: MonitorRepository,
 ): Promise<void> {
   if (interaction.channelId !== monitorsConfig.panel_channel_id) {
     await interaction.reply({
@@ -72,7 +71,7 @@ export async function handlePanelPollButton(
   }
 
 
-  const lastFetch = getConnectionMeta(metadataDb, connectionId);
+  const lastFetch = monitorRepo.getConnectionMeta(connectionId);
   if (lastFetch) {
     const nextPollAt =
       lastFetch.last_fetched_at + connection.cooldown_seconds * 1000;
@@ -101,11 +100,11 @@ export async function handlePanelPollButton(
       client,
       monitorsConfig,
       serverConfig,
-      metadataDb,
+      monitorRepo,
       connectionId,
     );
 
-    await refreshPanelEmbed(client, monitorsConfig, metadataDb);
+    await refreshPanelEmbed(client, monitorsConfig, monitorRepo);
 
     await sendMonitorLog(
       client,
@@ -119,7 +118,7 @@ export async function handlePanelPollButton(
 
 function buildPanelConnectionsMeta(
   monitorsConfig: MonitorsConfig,
-  metadataDb: Database,
+  monitorRepo: MonitorRepository,
 ) {
   return monitorsConfig.connections.map((c) => {
     const id = getConnectionId(c);
@@ -127,7 +126,7 @@ function buildPanelConnectionsMeta(
       connectionId: id,
       label: `${c.type}/${c.handle}`,
       cooldownSeconds: c.cooldown_seconds,
-      lastFetch: getConnectionMeta(metadataDb, id),
+      lastFetch: monitorRepo.getConnectionMeta(id),
     };
   });
 }
@@ -135,16 +134,16 @@ function buildPanelConnectionsMeta(
 export async function refreshPanelEmbed(
   client: Client,
   monitorsConfig: MonitorsConfig,
-  metadataDb: Database,
+  monitorRepo: MonitorRepository,
 ): Promise<boolean> {
-  const panelMessage = getPanelMessage(metadataDb, monitorsConfig.panel_channel_id);
+  const panelMessage = monitorRepo.getPanelMessage(monitorsConfig.panel_channel_id);
   if (!panelMessage) return false;
 
   const channel = await client.channels.fetch(monitorsConfig.panel_channel_id);
   if (!channel || !channel.isTextBased()) return false;
 
   const msg = await channel.messages.fetch(panelMessage.message_id);
-  const connectionsMeta = buildPanelConnectionsMeta(monitorsConfig, metadataDb);
+  const connectionsMeta = buildPanelConnectionsMeta(monitorsConfig, monitorRepo);
   const embedData = buildPanelEmbed(connectionsMeta as any);
   await msg.edit(embedData);
   return true;
@@ -154,13 +153,13 @@ export async function postAndPinPanelEmbed(
   interaction: ChatInputCommandInteraction,
   client: Client,
   monitorsConfig: MonitorsConfig,
-  metadataDb: Database,
+  monitorRepo: MonitorRepository,
 ): Promise<void> {
   if (!interaction.channel || !("send" in interaction.channel)) {
     throw new Error("Cannot send in this channel.");
   }
 
-  const connectionsMeta = buildPanelConnectionsMeta(monitorsConfig, metadataDb);
+  const connectionsMeta = buildPanelConnectionsMeta(monitorsConfig, monitorRepo);
   const embedData = buildPanelEmbed(connectionsMeta as any);
 
   const msg = await (interaction.channel as SendableChannels).send(embedData);
@@ -171,5 +170,5 @@ export async function postAndPinPanelEmbed(
     log.warn(err, "Failed to pin panel embed");
   }
 
-  upsertPanelMessage(metadataDb, monitorsConfig.panel_channel_id, msg.id);
+  monitorRepo.upsertPanelMessage(monitorsConfig.panel_channel_id, msg.id);
 }

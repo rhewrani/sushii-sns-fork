@@ -7,6 +7,7 @@ import { handleUsageSlash } from "./handlers/usageSlash";
 import type { MonitorsConfig } from "./handlers/monitor/config";
 import { loadMonitorsConfig } from "./handlers/monitor/config";
 import { openMetadataDb } from "./handlers/monitor/db";
+import { createMonitorRepository } from "./handlers/monitor/repository";
 import { handleInteraction } from "./handlers/monitor/interactions";
 import { isDevMode } from "./handlers/monitor/runtime";
 import logger from "./logger";
@@ -58,6 +59,7 @@ async function main(): Promise<void> {
     ? loadMonitorsConfig(monitorsConfigPath)
     : null;
   const monitorDb = monitorsConfigPath ? openMetadataDb(config.DB_PATH) : null;
+  const monitorRepo = monitorDb ? createMonitorRepository(monitorDb) : null;
   const reloadMonitorsConfig = (): MonitorsConfig => {
     if (!monitorsConfigPath) {
       throw new Error("MONITORS_CONFIG_PATH not set");
@@ -92,13 +94,13 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (monitorsConfigPath && monitorDb && monitorsConfig) {
+    if (monitorsConfigPath && monitorRepo && monitorsConfig) {
       await handleInteraction(
         interaction,
         client,
         monitorsConfig,
         serverConfig,
-        monitorDb,
+        monitorRepo,
         monitorsConfigPath,
         reloadMonitorsConfig,
       );

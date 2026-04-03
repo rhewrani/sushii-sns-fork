@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { sleep } from "bun";
 import dayjs from "dayjs";
 import timezone from "dayjs/plugin/timezone";
@@ -12,6 +11,7 @@ import {
   type SendableChannels,
 } from "discord.js";
 import { buildInlineFormatContent, buildLinksFormatMessages, suppressLinksInTextExceptLast } from "./template";
+import type { PostTrackingSink } from "../handlers/monitor/postTracking";
 import logger from "../logger";
 
 const log = logger.child({ module: "utils/discord" });
@@ -103,11 +103,12 @@ export interface SendPostOptions {
   prefix?: string;
   /** Optional: suppress embeds (default: true) */
   suppressEmbeds?: boolean;
-  /** Optional: metadata DB + connection to auto-record posted message ID */
-  metadataDb?: Database;
-  connectionId?: string;
-  /** Optional: post ID to track in DB (required if metadataDb + connectionId provided) */
-  postId?: string;
+  /** Optional: record first sent message id in monitor DB (see PostTrackingSink) */
+  postTracking?: {
+    connectionId: string;
+    postId: string;
+    sink: PostTrackingSink;
+  };
   /** Optional: override the text-content of the post */
   contentOverride?: string;
 }
@@ -144,9 +145,7 @@ export async function sendPostToChannel(
     template,
     prefix,
     suppressEmbeds = true,
-    metadataDb,
-    connectionId,
-    postId,
+    postTracking,
     contentOverride,
   } = options;
   const files = postData.files;
@@ -225,15 +224,12 @@ export async function sendPostToChannel(
     }
   }
 
-  if (metadataDb && connectionId && postId && result.messageIds.length > 0) {
+  if (postTracking && result.messageIds.length > 0) {
     try {
-      metadataDb.run(
-        `INSERT INTO monitor_seen_posts (connection_id, post_id, seen_at, posted_message_id)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(connection_id, post_id) DO UPDATE SET
-           seen_at = excluded.seen_at,
-           posted_message_id = excluded.posted_message_id`,
-        [connectionId, postId, Date.now(), result.messageIds[0]],
+      postTracking.sink.recordPosted(
+        postTracking.connectionId,
+        postTracking.postId,
+        result.messageIds[0],
       );
     } catch (err) {
       log.error(err, "Failed to track posted message ID in DB");

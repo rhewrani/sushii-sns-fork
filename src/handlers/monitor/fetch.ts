@@ -2,7 +2,6 @@
  * Monitor polling: orchestrates provider fetch modules (list + hydrate), DB seen state,
  * review creation, and `/fetch-all` sync.
  */
-import type { Database } from "bun:sqlite";
 import {
   MessageFlags,
   type ButtonInteraction,
@@ -18,7 +17,7 @@ import { convertHeicToJpeg } from "../../utils/heic";
 import { buildInlineFormatContent } from "../../utils/template";
 import type { MonitorsConfig } from "./config";
 import { findConnectionById, getConnectionId } from "./config";
-import { isPostSeen, markPostSeen, upsertConnectionMeta } from "./db";
+import type { MonitorRepository } from "./repository";
 import { batchToMessageOptions, buildReviewBatches } from "./embed";
 import { fetchInstagramConnectionPosts } from "./fetch/instagram";
 import { fetchTiktokFeed } from "./fetch/tiktok";
@@ -87,7 +86,7 @@ export async function fetchConnectionAndCreateReviews(
   client: Client,
   monitorsConfig: MonitorsConfig,
   serverConfig: ServerConfig | null,
-  metadataDb: Database,
+  monitorRepo: MonitorRepository,
   connectionId: string,
 ): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -116,8 +115,8 @@ export async function fetchConnectionAndCreateReviews(
         connection.igId,
         downloadFilesFromUrls,
         {
-          isPostSeen: (id) => isPostSeen(metadataDb, connectionId, id),
-          markPostSeen: (id) => markPostSeen(metadataDb, connectionId, id),
+          isPostSeen: (id) => monitorRepo.isPostSeen(connectionId, id),
+          markPostSeen: (id) => monitorRepo.markPostSeen(connectionId, id),
           limit: MAX_REVIEWS_PER_POLL,
         },
       );
@@ -140,8 +139,8 @@ export async function fetchConnectionAndCreateReviews(
   } else if (connection.type === "tiktok") {
     try {
       posts = await fetchTiktokFeed(connection.handle, downloadFilesFromUrls, {
-isPostSeen: (id) => isPostSeen(metadataDb, connectionId, id),
-          markPostSeen: (id) => markPostSeen(metadataDb, connectionId, id),
+        isPostSeen: (id) => monitorRepo.isPostSeen(connectionId, id),
+        markPostSeen: (id) => monitorRepo.markPostSeen(connectionId, id),
         limit: MAX_REVIEWS_PER_POLL,
       });
     } catch (err) {
@@ -163,8 +162,8 @@ isPostSeen: (id) => isPostSeen(metadataDb, connectionId, id),
   } else if (connection.type === "twitter") {
     try {
       posts = await fetchTwitterFeedRapidApi(connection.handle, downloadFilesFromUrls, {
-isPostSeen: (id) => isPostSeen(metadataDb, connectionId, id),
-          markPostSeen: (id) => markPostSeen(metadataDb, connectionId, id),
+        isPostSeen: (id) => monitorRepo.isPostSeen(connectionId, id),
+        markPostSeen: (id) => monitorRepo.markPostSeen(connectionId, id),
         limit: MAX_REVIEWS_PER_POLL,
       });
     } catch (err) {
@@ -190,7 +189,7 @@ isPostSeen: (id) => isPostSeen(metadataDb, connectionId, id),
   newPosts = posts;
 
   if (newPosts.length === 0) {
-    upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
+    monitorRepo.upsertConnectionMeta(connectionId, Date.now(), getDisplayName(interaction));
     await interaction.editReply("No new posts found.");
     return;
   }
@@ -258,14 +257,14 @@ isPostSeen: (id) => isPostSeen(metadataDb, connectionId, id),
       reviewState.messageIds = messageIds;
 
       reviewCount++;
-      if (postData.postID) markPostSeen(metadataDb, connectionId, postData.postID);
+      if (postData.postID) monitorRepo.markPostSeen(connectionId, postData.postID);
     } catch (err) {
       log.error({ err, reviewId }, "Failed to send review message");
       deleteReview(reviewId);
     }
   }
 
-  upsertConnectionMeta(metadataDb, connectionId, Date.now(), getDisplayName(interaction));
+  monitorRepo.upsertConnectionMeta(connectionId, Date.now(), getDisplayName(interaction));
 
   if (connection.type === "instagram") {
     await interaction.editReply(
@@ -285,7 +284,7 @@ isPostSeen: (id) => isPostSeen(metadataDb, connectionId, id),
  */
 export async function syncAllMonitorConnections(
   monitorsConfig: MonitorsConfig,
-  metadataDb: Database,
+  monitorRepo: MonitorRepository,
   opts?: { lastFetchedBy?: string },
 ): Promise<void> {
   const lastFetchedBy = opts?.lastFetchedBy ?? "fetch-all";
@@ -295,8 +294,8 @@ export async function syncAllMonitorConnections(
     const connectionId = getConnectionId(connection);
 
     const shared = {
-      isPostSeen: (id: string) => isPostSeen(metadataDb, connectionId, id),
-      markPostSeen: (id: string) => markPostSeen(metadataDb, connectionId, id),
+      isPostSeen: (id: string) => monitorRepo.isPostSeen(connectionId, id),
+      markPostSeen: (id: string) => monitorRepo.markPostSeen(connectionId, id),
     };
 
     try {
@@ -322,7 +321,7 @@ export async function syncAllMonitorConnections(
         });
       }
 
-      upsertConnectionMeta(metadataDb, connectionId, now, lastFetchedBy);
+      monitorRepo.upsertConnectionMeta(connectionId, now, lastFetchedBy);
     } catch (err) {
       log.error({ err, connectionId }, "fetch-all: connection sync failed");
     }

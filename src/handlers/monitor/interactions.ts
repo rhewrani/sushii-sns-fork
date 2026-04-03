@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   MessageFlags,
   PermissionFlagsBits,
@@ -9,12 +8,7 @@ import {
 import type { ServerConfig } from "../../config/server_config";
 import logger from "../../logger";
 import type { MonitorsConfig } from "./config";
-import {
-  purgeAllConnectionMeta,
-  purgeAllSeenPosts,
-  purgeConnectionMeta,
-  purgeConnectionSeenPosts,
-} from "./db";
+import type { MonitorRepository } from "./repository";
 import { sendMonitorLog } from "./log_channel";
 import {
   handlePanelPollButton,
@@ -58,7 +52,7 @@ export async function handleInteraction(
   client: Client,
   monitorsConfig: MonitorsConfig,
   serverConfig: ServerConfig | null,
-  db: Database,
+  monitorRepo: MonitorRepository,
   _monitorsConfigPath: string,
   _reloadMonitorsConfig: () => MonitorsConfig,
 ): Promise<void> {
@@ -92,7 +86,7 @@ export async function handleInteraction(
           monitorsConfig,
           serverConfig,
           client,
-          db,
+          monitorRepo,
         );
         return;
       }
@@ -105,7 +99,7 @@ export async function handleInteraction(
 
       if (customId.startsWith(REVIEW_POST_PREFIX)) {
         const reviewId = customId.slice(REVIEW_POST_PREFIX.length);
-        await handleReviewPost(interaction, reviewId, db);
+        await handleReviewPost(interaction, reviewId, monitorRepo);
         return;
       }
 
@@ -135,10 +129,10 @@ export async function handleInteraction(
         }
 
         try {
-          await syncAllMonitorConnections(monitorsConfig, db, {
+          await syncAllMonitorConnections(monitorsConfig, monitorRepo, {
             lastFetchedBy: cmd.user.username,
           });
-          await refreshPanelEmbed(client, monitorsConfig, db);
+          await refreshPanelEmbed(client, monitorsConfig, monitorRepo);
           await sendMonitorLog(
             client,
             monitorsConfig,
@@ -177,7 +171,7 @@ export async function handleInteraction(
       }
 
       if (cmd.commandName === "post") {
-        await handlePostCommand(interaction, monitorsConfig, serverConfig, client, db);
+        await handlePostCommand(interaction, monitorsConfig, serverConfig, client, monitorRepo);
         return;
       }
 
@@ -195,13 +189,13 @@ export async function handleInteraction(
           return;
         }
 
-        if (await refreshPanelEmbed(client, monitorsConfig, db)) {
+        if (await refreshPanelEmbed(client, monitorsConfig, monitorRepo)) {
           await cmd.editReply({ content: "Panel embed refreshed." });
           return;
         }
 
         try {
-          await postAndPinPanelEmbed(cmd, client, monitorsConfig, db);
+          await postAndPinPanelEmbed(cmd, client, monitorsConfig, monitorRepo);
           await cmd.editReply({ content: "Panel embed posted and pinned." });
         } catch {
           await cmd.editReply({ content: "Failed to post panel embed." });
@@ -212,7 +206,7 @@ export async function handleInteraction(
       if (group === "panel" && sub === "refresh") {
         await cmd.deferReply({ flags: MessageFlags.Ephemeral });
 
-        if (!(await refreshPanelEmbed(client, monitorsConfig, db))) {
+        if (!(await refreshPanelEmbed(client, monitorsConfig, monitorRepo))) {
           await cmd.editReply({ content: "Panel embed not found. Run panel setup first." });
           return;
         }
@@ -229,8 +223,8 @@ export async function handleInteraction(
         const connectionId = `${type}:${handle}`;
 
         try {
-          purgeConnectionSeenPosts(db, connectionId);
-          purgeConnectionMeta(db, connectionId);
+          monitorRepo.purgeConnectionSeenPosts(connectionId);
+          monitorRepo.purgeConnectionMeta(connectionId);
         } catch (err) {
           log.error({ err, connectionId }, "Failed to purge connection DB");
           await cmd.editReply({ content: "Failed to purge connection DB." });
@@ -250,8 +244,8 @@ export async function handleInteraction(
         await cmd.deferReply({ flags: MessageFlags.Ephemeral });
 
         try {
-          purgeAllSeenPosts(db);
-          purgeAllConnectionMeta(db);
+          monitorRepo.purgeAllSeenPosts();
+          monitorRepo.purgeAllConnectionMeta();
         } catch (err) {
           log.error({ err }, "Failed to purge all monitor DB state");
           await cmd.editReply({ content: "Failed to purge all monitor DB state." });

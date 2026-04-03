@@ -228,3 +228,22 @@ export function checkIfPostWasPosted(
   }
   return { wasPosted: false as const, messageId: null };
 }
+
+/**
+ * Upsert seen row with posted Discord message id (same semantics as /post + review Post tracking).
+ */
+export function upsertPostedMessageTracking(
+  db: Database,
+  connectionId: string,
+  postId: string,
+  discordMessageId: string,
+): void {
+  db.run(
+    `INSERT INTO monitor_seen_posts (connection_id, post_id, seen_at, posted_message_id)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(connection_id, post_id) DO UPDATE SET
+       seen_at = excluded.seen_at,
+       posted_message_id = excluded.posted_message_id`,
+    [connectionId, postId, Date.now(), discordMessageId],
+  );
+}

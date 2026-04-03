@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   ActionRowBuilder,
   MessageFlags,
@@ -15,7 +14,9 @@ import {
 import logger from "../../logger";
 import { sendPostToChannel, type SendPostResult } from "../../utils/discord";
 import { buildReviewBatches, buildReviewStatusEditOptions } from "./embed";
+import { connectionIdFromPlatformUsername } from "./connectionId";
 import { enqueuePost } from "./queue";
+import type { MonitorRepository } from "./repository";
 import {
   getReview,
   updateReview,
@@ -47,7 +48,7 @@ async function postReviewToSocials(
   interaction: ButtonInteraction,
   reviewChannel: TextBasedChannel,
   lastMsgId: string | undefined,
-  metadataDb: Database,
+  monitorRepo: MonitorRepository,
 ): Promise<void> {
   const channel = await interaction.client.channels.fetch(state.socialsChannelId);
   if (!channel || !channel.isTextBased() || !("send" in channel)) {
@@ -55,8 +56,11 @@ async function postReviewToSocials(
     return;
   }
 
-  const connectionId =
-    `${state.postData.postLink.metadata.platform.replace(/-story$/, "")}:${state.postData.username}`;
+  const normalizedPlatform = state.postData.postLink.metadata.platform.replace(/-story$/, "");
+  const connectionId = connectionIdFromPlatformUsername(
+    normalizedPlatform,
+    state.postData.username,
+  );
   const filteredPostData = { ...state.postData, files: filteredFiles };
 
   let result: SendPostResult;
@@ -64,9 +68,11 @@ async function postReviewToSocials(
     result = await sendPostToChannel(channel as SendableChannels, filteredPostData, {
       format: state.format as "inline" | "links",
       template: state.template,
-      metadataDb,
-      connectionId,
-      postId: state.postData.postID,
+      postTracking: {
+        connectionId,
+        postId: state.postData.postID,
+        sink: monitorRepo,
+      },
       ...(state.customContent != null ? { contentOverride: state.customContent } : {}),
     });
   } catch (err) {
@@ -240,7 +246,7 @@ export async function handleReviewModalSubmit(
 export async function handleReviewPost(
   interaction: ButtonInteraction,
   reviewId: string,
-  metadataDb: Database,
+  monitorRepo: MonitorRepository,
 ): Promise<void> {
   const state = getReviewOrWarn(reviewId);
   if (!state) {
@@ -294,7 +300,7 @@ export async function handleReviewPost(
       interaction,
       reviewChannel,
       lastMsgId,
-      metadataDb,
+      monitorRepo,
     ),
   );
 }
