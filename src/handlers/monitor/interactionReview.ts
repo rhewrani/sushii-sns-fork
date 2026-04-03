@@ -248,6 +248,7 @@ export async function handleReviewPost(
         template: state.template,
         connectionDb: getConnectionDb(connectionId),
         postId: state.postData.postID,
+        ...(state.customContent != null ? { contentOverride: state.customContent } : {}),
       });
 
       postedToSocials = true;

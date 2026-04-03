@@ -143,6 +143,19 @@ describe("buildLinksFormatMessages", () => {
     const msgs = buildLinksFormatMessages("{caption}", makePostData({ originalText: longCaption }), []);
     expect(msgs[0].content!.length).toBeLessThanOrEqual(2000);
   });
+
+  it("uses fullTextOverride for prefix before {links} merge (edited review text)", () => {
+    const edited =
+      "`260313 testuser Instagram Update`\n<https://www.instagram.com/p/ABC123/>\nEDITED_CAPTION";
+    const msgs = buildLinksFormatMessages(
+      DEFAULT_LINKS_TEMPLATE,
+      makePostData(),
+      cdnUrls,
+      edited,
+    );
+    expect(msgs[0].content).toContain("EDITED_CAPTION");
+    expect(msgs[0].content).toContain("https://cdn.example.com/1.jpg");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -61,6 +61,7 @@ export function buildLinksFormatMessages(
   template: string,
   postData: PostData<SnsMetadata>,
   cdnUrls: string[],
+  fullTextOverride?: string,
 ): MessageCreateOptions[] {
   const vars = buildTemplateVars(postData, cdnUrls);
 
@@ -70,22 +71,40 @@ export function buildLinksFormatMessages(
 
   if (linksIdx === -1) {
     // No {links} in template — render as-is, no CDN URL chunking
-    const content = renderTemplate(template, vars).slice(0, 2000);
+    const content = (
+      fullTextOverride !== undefined
+        ? fullTextOverride
+        : renderTemplate(template, vars)
+    ).slice(0, 2000);
     return [{ content, flags: MessageFlags.SuppressEmbeds }];
   }
 
-  const prefix = renderTemplate(template.slice(0, linksIdx), vars);
   const suffix = template.slice(linksIdx + linksPlaceholder.length);
   const renderedSuffix = suffix
     ? renderTemplate(suffix, vars)
     : "";
+
+  let prefix: string;
+  let appendSuffix = true;
+
+  if (fullTextOverride !== undefined) {
+    if (renderedSuffix && fullTextOverride.endsWith(renderedSuffix)) {
+      prefix = fullTextOverride.slice(0, -renderedSuffix.length);
+    } else {
+      prefix = fullTextOverride;
+      appendSuffix = false;
+    }
+  } else {
+    prefix = renderTemplate(template.slice(0, linksIdx), vars);
+  }
 
   // Use itemsToMessageContents to handle CDN URL overflow
   const chunks = itemsToMessageContents(prefix, cdnUrls);
 
   return chunks.map((chunk, i) => {
     // Append suffix to last chunk
-    const content = i === chunks.length - 1 ? chunk + renderedSuffix : chunk;
+    const tail = i === chunks.length - 1 && appendSuffix ? renderedSuffix : "";
+    const content = chunk + tail;
     return {
       content: content.slice(0, 2000),
       flags: MessageFlags.SuppressEmbeds,

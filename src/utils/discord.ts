@@ -106,6 +106,8 @@ export interface SendPostOptions {
   connectionDb?: { run: (sql: string, ...params: any[]) => any }; // minimal DB interface
   /** Optional: post ID to track in DB (required if connectionDb provided) */
   postId?: string;
+  /** Optional: override the text-content of the post */
+  contentOverride?: string;
 }
 
 export interface SendPostResult {
@@ -135,7 +137,8 @@ export async function sendPostToChannel(
   postData: PostData<AnySnsMetadata>,
   options: SendPostOptions,
 ): Promise<SendPostResult> {
-  const { format, template, prefix, suppressEmbeds = true, connectionDb, postId } = options;
+  const { format, template, prefix, suppressEmbeds = true, connectionDb, postId, contentOverride } =
+    options;
   const files = postData.files;
 
   validateFileSizes(files);
@@ -160,7 +163,10 @@ export async function sendPostToChannel(
 
   if (format === "inline") {
     // === INLINE FORMAT: text + direct attachments ===
-    const content = buildInlineFormatContent(template ?? "", postData as any);
+    const content =
+      contentOverride !== undefined
+        ? contentOverride
+        : buildInlineFormatContent(template ?? "", postData as any);
     const attachments = files.map((f, i) =>
       new AttachmentBuilder(f.buffer).setName(`media-${i}.${f.ext}`)
     );
@@ -199,7 +205,8 @@ export async function sendPostToChannel(
     const textMsgs = buildLinksFormatMessages(
       template ?? "",
       postData as any,
-      cdnUrls
+      cdnUrls,
+      contentOverride,
     );
     for (const msg of textMsgs) {
       const sent = await channel.send({ ...msg, flags });
