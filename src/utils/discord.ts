@@ -123,52 +123,6 @@ function isAlreadyCrosspostedError(err: unknown): boolean {
   return false;
 }
 
-function retryAfterMsFromError(err: unknown): number | null {
-  const e = err as {
-    data?: { retry_after?: number };
-    rawError?: { retry_after?: number };
-    body?: { retry_after?: number };
-  };
-  const sec = e?.data?.retry_after ?? e?.rawError?.retry_after ?? e?.body?.retry_after;
-  if (typeof sec === "number" && Number.isFinite(sec)) {
-    return Math.ceil(sec * 1000) + 100;
-  }
-  return null;
-}
-
-/**
- * Announcement publish: crosspost in order with spacing + retries.
- * Parallel crossposts often hit rate limits so only some messages publish.
- */
-async function crosspostAnnouncementMessagesInBackground(messages: Message[]): Promise<void> {
-  const gapMs = 450;
-  const maxAttempts = 5;
-
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i];
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        await m.crosspost();
-        break;
-      } catch (err) {
-        if (isAlreadyCrosspostedError(err)) {
-          break;
-        }
-        if (attempt === maxAttempts - 1) {
-          const { requestBody: _body, ...safeErr } = (err as any) ?? {};
-          log.warn(safeErr, `Failed to crosspost message ${m.id} after retries`);
-          break;
-        }
-        const ra = retryAfterMsFromError(err);
-        await sleep(ra ?? Math.min(350 * 2 ** attempt, 8000));
-      }
-    }
-    if (i < messages.length - 1) {
-      await sleep(gapMs);
-    }
-  }
-}
-
 /**
  * Send a PostData to a Discord channel using review-style formatting.
  * Handles inline (text+attachments) and links (text+CDN URLs) formats.
@@ -269,8 +223,19 @@ export async function sendPostToChannel(
   }
 
   if (channel.type === ChannelType.GuildAnnouncement && result.messages.length > 0) {
-    // Do not await — keeps the review queue fast. Reliability: sequential + retries (parallel was rate-limited).
-    void crosspostAnnouncementMessagesInBackground(result.messages).catch((err) => {
+    const messages = result.messages;
+    void (async () => {
+      for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        try {
+          await m.crosspost();
+        } catch (err) {
+          if (!isAlreadyCrosspostedError(err)) {
+            log.warn({ err, messageId: m.id }, "Failed to crosspost");
+          }
+        }
+      }
+    })().catch((err) => {
       log.error(err, "crosspost background task failed");
     });
   }
