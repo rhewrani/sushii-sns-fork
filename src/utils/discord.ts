@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { sleep } from "bun";
 import dayjs from "dayjs";
 import timezone from "dayjs/plugin/timezone";
@@ -102,9 +103,10 @@ export interface SendPostOptions {
   prefix?: string;
   /** Optional: suppress embeds (default: true) */
   suppressEmbeds?: boolean;
-  /** Optional: connection DB to auto-record posted message ID */
-  connectionDb?: { run: (sql: string, ...params: any[]) => any }; // minimal DB interface
-  /** Optional: post ID to track in DB (required if connectionDb provided) */
+  /** Optional: metadata DB + connection to auto-record posted message ID */
+  metadataDb?: Database;
+  connectionId?: string;
+  /** Optional: post ID to track in DB (required if metadataDb + connectionId provided) */
   postId?: string;
   /** Optional: override the text-content of the post */
   contentOverride?: string;
@@ -137,8 +139,16 @@ export async function sendPostToChannel(
   postData: PostData<AnySnsMetadata>,
   options: SendPostOptions,
 ): Promise<SendPostResult> {
-  const { format, template, prefix, suppressEmbeds = true, connectionDb, postId, contentOverride } =
-    options;
+  const {
+    format,
+    template,
+    prefix,
+    suppressEmbeds = true,
+    metadataDb,
+    connectionId,
+    postId,
+    contentOverride,
+  } = options;
   const files = postData.files;
 
   validateFileSizes(files);
@@ -215,14 +225,15 @@ export async function sendPostToChannel(
     }
   }
 
-  if (connectionDb && postId && result.messageIds.length > 0) {
+  if (metadataDb && connectionId && postId && result.messageIds.length > 0) {
     try {
-      // Use INSERT OR REPLACE to handle both new posts and previously-seen-but-not-posted
-      connectionDb.run(
-        "INSERT OR REPLACE INTO seen_posts (post_id, seen_at, posted_message_id) VALUES (?, ?, ?)",
-        postId,
-        Date.now(),
-        result.messageIds[0]
+      metadataDb.run(
+        `INSERT INTO monitor_seen_posts (connection_id, post_id, seen_at, posted_message_id)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(connection_id, post_id) DO UPDATE SET
+           seen_at = excluded.seen_at,
+           posted_message_id = excluded.posted_message_id`,
+        [connectionId, postId, Date.now(), result.messageIds[0]],
       );
     } catch (err) {
       log.error(err, "Failed to track posted message ID in DB");

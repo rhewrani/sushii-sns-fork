@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import {
   ActionRowBuilder,
   MessageFlags,
@@ -12,7 +13,6 @@ import {
 } from "discord.js";
 import logger from "../../logger";
 import { sendPostToChannel } from "../../utils/discord";
-import { getConnectionDb } from "./db";
 import { buildReviewBatches, buildReviewStatusEditOptions } from "./embed";
 import { enqueuePost } from "./queue";
 import {
@@ -166,6 +166,7 @@ export async function handleReviewModalSubmit(
 export async function handleReviewPost(
   interaction: ButtonInteraction,
   reviewId: string,
+  metadataDb: Database,
 ): Promise<void> {
   const state = getReviewOrWarn(reviewId);
   if (!state) {
@@ -246,7 +247,8 @@ export async function handleReviewPost(
       result = await sendPostToChannel(channel as SendableChannels, filteredPostData, {
         format: state.format as "inline" | "links",
         template: state.template,
-        connectionDb: getConnectionDb(connectionId),
+        metadataDb,
+        connectionId,
         postId: state.postData.postID,
         ...(state.customContent != null ? { contentOverride: state.customContent } : {}),
       });

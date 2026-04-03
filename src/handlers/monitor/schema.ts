@@ -15,20 +15,15 @@ export const METADATA_MIGRATIONS: string[][] = [
       last_fetched_by TEXT NOT NULL
     )`,
   ],
-];
-
-export const CONNECTION_MIGRATIONS: string[][] = [
-  // Migration 0 — initial schema
+  // Migration 1 — seen/post dedupe and posted-message tracking
   [
-    `CREATE TABLE IF NOT EXISTS seen_posts (
-      post_id TEXT NOT NULL PRIMARY KEY,
-      seen_at INTEGER NOT NULL
+    `CREATE TABLE IF NOT EXISTS monitor_seen_posts (
+      connection_id TEXT NOT NULL,
+      post_id TEXT NOT NULL,
+      seen_at INTEGER NOT NULL,
+      posted_message_id TEXT,
+      PRIMARY KEY (connection_id, post_id)
     )`,
-  ],
-  [
-    `
-    ALTER TABLE seen_posts 
-    ADD COLUMN posted_message_id TEXT;
-    `,
+    `CREATE INDEX IF NOT EXISTS idx_monitor_seen_posts_connection_id ON monitor_seen_posts(connection_id)`,
   ],
 ];

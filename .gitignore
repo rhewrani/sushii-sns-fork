@@ -181,5 +181,4 @@ mocks/*
 data.db
 data.db-wal
 data.db-shm
-connections-db/*
 

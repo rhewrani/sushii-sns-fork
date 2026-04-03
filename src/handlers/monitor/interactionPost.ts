@@ -15,7 +15,7 @@ import type { AnySnsMetadata, SnsLink } from "../../platforms/base";
 import { MediaTooLargeError, sendPostToChannel } from "../../utils/discord";
 import { parseUsernameFromUrl } from "../../utils/socialUrls";
 import type { MonitorsConfig } from "./config";
-import { checkIfPostWasPosted, getConnectionDb } from "./db";
+import { checkIfPostWasPosted } from "./db";
 import { findAllSnsLinks, snsService } from "../sns";
 
 const log = logger.child({ module: "monitor/interactionPost" });
@@ -120,6 +120,7 @@ function extractConnectionInfo(link: SnsLink<AnySnsMetadata>): {
 }
 
 async function checkDuplicateBeforeFetch(
+  metadataDb: Database,
   connectionId: string,
   postId: string,
   monitorsConfig: MonitorsConfig,
@@ -127,8 +128,7 @@ async function checkDuplicateBeforeFetch(
 ): Promise<boolean> {
   if (!isConnectionMonitored(monitorsConfig, connectionId)) return true;
 
-  const connectionDb = getConnectionDb(connectionId);
-  const check = checkIfPostWasPosted(connectionDb, postId);
+  const check = checkIfPostWasPosted(metadataDb, connectionId, postId);
 
   if (check.wasPosted) {
     const result = await promptRepostConfirmation(
@@ -171,7 +171,6 @@ export async function handlePostCommand(
     const normalizedPlatform = platform.replace(/-story$/, "");
 
     let finalConnectionId: string | undefined;
-    let finalConnectionDb: ReturnType<typeof getConnectionDb> | undefined;
     let connectionExists = false;
 
     const { username, postId, canCheckBeforeFetch } = extractConnectionInfo(link);
@@ -180,6 +179,7 @@ export async function handlePostCommand(
       finalConnectionId = `${normalizedPlatform}:${username}`;
 
       const confirmed = await checkDuplicateBeforeFetch(
+        _db,
         finalConnectionId,
         postId,
         monitorsConfig,
@@ -202,10 +202,10 @@ export async function handlePostCommand(
       finalConnectionId = `${normalizedPlatform}:${postData.username}`;
 
       if (isConnectionMonitored(monitorsConfig, finalConnectionId)) {
-        finalConnectionDb = getConnectionDb(finalConnectionId);
         connectionExists = true;
 
         const confirmed = await checkDuplicateBeforeFetch(
+          _db,
           finalConnectionId,
           postData.postID,
           monitorsConfig,
@@ -218,7 +218,8 @@ export async function handlePostCommand(
     const result = await sendPostToChannel(socialsChannel as SendableChannels, postData, {
       format: monitorsConfig.format,
       template: monitorsConfig.template,
-      connectionDb: connectionExists ? finalConnectionDb : undefined,
+      metadataDb: connectionExists ? _db : undefined,
+      connectionId: connectionExists ? finalConnectionId : undefined,
       postId: connectionExists ? postData.postID : undefined,
     });
 

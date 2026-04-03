@@ -18,12 +18,7 @@ import { convertHeicToJpeg } from "../../utils/heic";
 import { buildInlineFormatContent } from "../../utils/template";
 import type { MonitorsConfig } from "./config";
 import { findConnectionById, getConnectionId } from "./config";
-import {
-  getConnectionDb,
-  isPostSeen,
-  markPostSeen,
-  upsertConnectionMeta,
-} from "./db";
+import { isPostSeen, markPostSeen, upsertConnectionMeta } from "./db";
 import { batchToMessageOptions, buildReviewBatches } from "./embed";
 import { fetchInstagramConnectionPosts } from "./fetch/instagram";
 import { fetchTiktokFeed } from "./fetch/tiktok";
@@ -105,8 +100,6 @@ export async function fetchConnectionAndCreateReviews(
 
   await interaction.editReply("Fetching latest posts...");
 
-  const connectionDb = getConnectionDb(connectionId);
-
   const MAX_REVIEWS_PER_POLL = 3;
   const MAX_STORIES_PER_POLL = 10;
 
@@ -123,8 +116,8 @@ export async function fetchConnectionAndCreateReviews(
         connection.igId,
         downloadFilesFromUrls,
         {
-          isPostSeen: (id) => isPostSeen(connectionDb, id),
-          markPostSeen: (id) => markPostSeen(connectionDb, id),
+          isPostSeen: (id) => isPostSeen(metadataDb, connectionId, id),
+          markPostSeen: (id) => markPostSeen(metadataDb, connectionId, id),
           limit: MAX_REVIEWS_PER_POLL,
         },
       );
@@ -147,8 +140,8 @@ export async function fetchConnectionAndCreateReviews(
   } else if (connection.type === "tiktok") {
     try {
       posts = await fetchTiktokFeed(connection.handle, downloadFilesFromUrls, {
-        isPostSeen: (id) => isPostSeen(connectionDb, id),
-        markPostSeen: (id) => markPostSeen(connectionDb, id),
+isPostSeen: (id) => isPostSeen(metadataDb, connectionId, id),
+          markPostSeen: (id) => markPostSeen(metadataDb, connectionId, id),
         limit: MAX_REVIEWS_PER_POLL,
       });
     } catch (err) {
@@ -170,8 +163,8 @@ export async function fetchConnectionAndCreateReviews(
   } else if (connection.type === "twitter") {
     try {
       posts = await fetchTwitterFeedRapidApi(connection.handle, downloadFilesFromUrls, {
-        isPostSeen: (id) => isPostSeen(connectionDb, id),
-        markPostSeen: (id) => markPostSeen(connectionDb, id),
+isPostSeen: (id) => isPostSeen(metadataDb, connectionId, id),
+          markPostSeen: (id) => markPostSeen(metadataDb, connectionId, id),
         limit: MAX_REVIEWS_PER_POLL,
       });
     } catch (err) {
@@ -265,7 +258,7 @@ export async function fetchConnectionAndCreateReviews(
       reviewState.messageIds = messageIds;
 
       reviewCount++;
-      if (postData.postID) markPostSeen(connectionDb, postData.postID);
+      if (postData.postID) markPostSeen(metadataDb, connectionId, postData.postID);
     } catch (err) {
       log.error({ err, reviewId }, "Failed to send review message");
       deleteReview(reviewId);
@@ -300,11 +293,10 @@ export async function syncAllMonitorConnections(
 
   for (const connection of monitorsConfig.connections) {
     const connectionId = getConnectionId(connection);
-    const connectionDb = getConnectionDb(connectionId);
 
     const shared = {
-      isPostSeen: (id: string) => isPostSeen(connectionDb, id),
-      markPostSeen: (id: string) => markPostSeen(connectionDb, id),
+      isPostSeen: (id: string) => isPostSeen(metadataDb, connectionId, id),
+      markPostSeen: (id: string) => markPostSeen(metadataDb, connectionId, id),
     };
 
     try {

@@ -1,12 +1,8 @@
 import { Database } from "bun:sqlite";
-import { dirname, join } from "path";
 import logger from "../../logger";
-import { existsSync, mkdirSync, readdirSync } from "fs";
-import { CONNECTION_MIGRATIONS, METADATA_MIGRATIONS } from "./schema";
+import { METADATA_MIGRATIONS } from "./schema";
 
 const log = logger.child({ module: "monitor/db" });
-
-let metadataDbPathForConnections: string | null = null;
 
 export type LastFetch = {
   last_fetched_at: number;
@@ -24,7 +20,7 @@ export type ConnectionMeta = {
   last_fetched_by: string;
 };
 
-export type PostPostedCheck = 
+export type PostPostedCheck =
   | { wasPosted: false; messageId: null }
   | { wasPosted: true; messageId: string };
 
@@ -42,13 +38,9 @@ function runMigrations(db: Database, migrations: string[][]): void {
 }
 
 export function openMetadataDb(path: string): Database {
-  metadataDbPathForConnections = path;
   const db = new Database(path, { create: true });
 
   db.exec("PRAGMA journal_mode=WAL;");
-  // Single path: `runMigrations` bumps PRAGMA user_version per step. Metadata SQL uses
-  // CREATE TABLE IF NOT EXISTS; connection DBs below still use the commented safety
-  // pattern only if we re-enable it for ALTER-heavy migrations.
   runMigrations(db, METADATA_MIGRATIONS);
 
   return db;
@@ -104,68 +96,27 @@ export function upsertConnectionMeta(
   ).run(connectionId, lastFetchedAt, lastFetchedBy);
 }
 
-function sanitizeConnectionIdForFile(connectionId: string): string {
-  // Encode then replace `%` to avoid odd edge-cases on Windows paths.
-  return encodeURIComponent(connectionId).replace(/%/g, "_");
-}
-
-function getConnectionDbPath(metadataDbPath: string, connectionId: string): string {
-  const baseDir = dirname(metadataDbPath);
-  const connectionsDir = getConnectionsDbDir(baseDir);
-  const fileName = `${sanitizeConnectionIdForFile(connectionId)}.db`;
-  return join(connectionsDir, fileName);
-}
-
-function getConnectionsDbDir(baseDir: string): string {
-  return join(baseDir, "connections-db");
-}
-
-function openConnectionDb(connectionDbPath: string): Database {
-  const db = new Database(connectionDbPath, { create: true });
-  db.exec("PRAGMA journal_mode=WAL;");
-  runMigrations(db, CONNECTION_MIGRATIONS);
-  // Safety: same as metadata DB — ensure the required tables exist.
-  // for (const migration of CONNECTION_MIGRATIONS) {
-  //   for (const sql of migration) db.exec(sql);
-  // }
-  return db;
-}
-
-const connectionDbCache = new Map<string, Database>();
-
-export function getConnectionDb(
+export function isPostSeen(
+  db: Database,
   connectionId: string,
-): Database {
-  if (!metadataDbPathForConnections) {
-    throw new Error("openMetadataDb() must be called before getConnectionDb()");
-  }
-
-  const connectionDbPath = getConnectionDbPath(metadataDbPathForConnections, connectionId);
-  const cached = connectionDbCache.get(connectionDbPath);
-  if (cached) return cached;
-
-  // Ensure folder exists before sqlite opens/creates.
-  mkdirSync(dirname(connectionDbPath), { recursive: true });
-  const db = openConnectionDb(connectionDbPath);
-  connectionDbCache.set(connectionDbPath, db);
-  return db;
-}
-
-export function isPostSeen(connectionDb: Database, postId: string): boolean {
-  const row = connectionDb
-    .query<{ count: number }, [string]>(
-      "SELECT COUNT(*) as count FROM seen_posts WHERE post_id = ?",
+  postId: string,
+): boolean {
+  const row = db
+    .query<{ count: number }, [string, string]>(
+      "SELECT COUNT(*) as count FROM monitor_seen_posts WHERE connection_id = ? AND post_id = ?",
     )
-    .get(postId);
+    .get(connectionId, postId);
   return (row?.count ?? 0) > 0;
 }
 
-export function markPostSeen(connectionDb: Database, postId: string): void {
-  connectionDb
-    .query(
-      "INSERT OR IGNORE INTO seen_posts (post_id, seen_at) VALUES (?, ?)",
-    )
-    .run(postId, Date.now());
+export function markPostSeen(
+  db: Database,
+  connectionId: string,
+  postId: string,
+): void {
+  db.query(
+    "INSERT OR IGNORE INTO monitor_seen_posts (connection_id, post_id, seen_at) VALUES (?, ?, ?)",
+  ).run(connectionId, postId, Date.now());
 }
 
 export function purgeConnectionMeta(db: Database, connectionId: string): void {
@@ -176,47 +127,26 @@ export function purgeAllConnectionMeta(db: Database): void {
   db.exec("DELETE FROM monitor_connection_meta");
 }
 
-export function purgeConnectionSeenPosts(connectionId: string): void {
-  const connectionDb = getConnectionDb(connectionId);
-  connectionDb.exec("DELETE FROM seen_posts");
+export function purgeConnectionSeenPosts(db: Database, connectionId: string): void {
+  db.query("DELETE FROM monitor_seen_posts WHERE connection_id = ?").run(connectionId);
 }
 
-export function purgeAllSeenPosts(): void {
-  if (!metadataDbPathForConnections) {
-    throw new Error("openMetadataDb() must be called before purgeAllSeenPosts()");
-  }
-
-  const baseDir = dirname(metadataDbPathForConnections);
-  const connectionsDir = getConnectionsDbDir(baseDir);
-  if (!existsSync(connectionsDir)) return;
-
-  // Purge already-open DB handles.
-  for (const db of connectionDbCache.values()) {
-    db.exec("DELETE FROM seen_posts");
-  }
-
-  // Purge all .db files in the directory (including ones not yet opened in cache).
-  const fileNames = readdirSync(connectionsDir);
-  for (const fileName of fileNames) {
-    if (!fileName.endsWith(".db")) continue;
-    const path = join(connectionsDir, fileName);
-    const db = new Database(path, { create: true });
-    db.exec("DELETE FROM seen_posts");
-    db.close();
-  }
+export function purgeAllSeenPosts(db: Database): void {
+  db.exec("DELETE FROM monitor_seen_posts");
 }
 
 // === Posted Message ID Tracking ===
 
 function queryPostedMessageId(
-  connectionDb: Database,
+  db: Database,
+  connectionId: string,
   postId: string,
 ): string | null {
-  const row = connectionDb
-    .query<{ posted_message_id: string | null }, [string]>(
-      "SELECT posted_message_id FROM seen_posts WHERE post_id = ?",
+  const row = db
+    .query<{ posted_message_id: string | null }, [string, string]>(
+      "SELECT posted_message_id FROM monitor_seen_posts WHERE connection_id = ? AND post_id = ?",
     )
-    .get(postId);
+    .get(connectionId, postId);
   return row?.posted_message_id ?? null;
 }
 
@@ -225,10 +155,11 @@ function queryPostedMessageId(
  * Returns null if the post was seen but never posted (e.g., rejected in review).
  */
 export function getPostedMessageId(
-  connectionDb: Database,
+  db: Database,
+  connectionId: string,
   postId: string,
 ): string | null {
-  return queryPostedMessageId(connectionDb, postId);
+  return queryPostedMessageId(db, connectionId, postId);
 }
 
 /**
@@ -236,23 +167,18 @@ export function getPostedMessageId(
  * Upserts the posted_message_id for the given post_id.
  */
 export function markPostPosted(
-  connectionDb: Database,
+  db: Database,
+  connectionId: string,
   postId: string,
   messageId: string,
 ): void {
-  // First ensure the post is marked as seen (in case it wasn't)
-  connectionDb
-    .query(
-      "INSERT OR IGNORE INTO seen_posts (post_id, seen_at) VALUES (?, ?)",
-    )
-    .run(postId, Date.now());
-  
-  // Then update the posted_message_id
-  connectionDb
-    .query(
-      "UPDATE seen_posts SET posted_message_id = ? WHERE post_id = ?",
-    )
-    .run(messageId, postId);
+  db.query(
+    "INSERT OR IGNORE INTO monitor_seen_posts (connection_id, post_id, seen_at) VALUES (?, ?, ?)",
+  ).run(connectionId, postId, Date.now());
+
+  db.query(
+    "UPDATE monitor_seen_posts SET posted_message_id = ? WHERE connection_id = ? AND post_id = ?",
+  ).run(messageId, connectionId, postId);
 }
 
 /**
@@ -260,14 +186,13 @@ export function markPostPosted(
  * Does NOT unmark the post as seen.
  */
 export function clearPostedMessageId(
-  connectionDb: Database,
+  db: Database,
+  connectionId: string,
   postId: string,
 ): void {
-  connectionDb
-    .query(
-      "UPDATE seen_posts SET posted_message_id = NULL WHERE post_id = ?",
-    )
-    .run(postId);
+  db.query(
+    "UPDATE monitor_seen_posts SET posted_message_id = NULL WHERE connection_id = ? AND post_id = ?",
+  ).run(connectionId, postId);
 }
 
 /**
@@ -275,16 +200,17 @@ export function clearPostedMessageId(
  * Useful for cleanup or audit operations.
  */
 export function getPostedPosts(
-  connectionDb: Database,
+  db: Database,
+  connectionId: string,
 ): Array<{ post_id: string; posted_message_id: string; seen_at: number }> {
-  return connectionDb
+  return db
     .query<
       { post_id: string; posted_message_id: string; seen_at: number },
-      []
+      [string]
     >(
-      "SELECT post_id, posted_message_id, seen_at FROM seen_posts WHERE posted_message_id IS NOT NULL",
+      "SELECT post_id, posted_message_id, seen_at FROM monitor_seen_posts WHERE connection_id = ? AND posted_message_id IS NOT NULL",
     )
-    .all();
+    .all(connectionId);
 }
 
 /**
@@ -292,10 +218,11 @@ export function getPostedPosts(
  * Returns both the status and the existing message ID (if any).
  */
 export function checkIfPostWasPosted(
-  connectionDb: Database,
+  db: Database,
+  connectionId: string,
   postId: string,
 ): PostPostedCheck {
-  const messageId = queryPostedMessageId(connectionDb, postId);
+  const messageId = queryPostedMessageId(db, connectionId, postId);
   if (messageId !== null) {
     return { wasPosted: true as const, messageId };
   }

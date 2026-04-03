@@ -41,11 +41,11 @@ Request logging uses Hono’s logger middleware.
 
 1. **`InteractionCreate`** in `index.ts` routes `/usage` first, then monitor commands to [`handleInteraction`](../src/handlers/monitor/interactions.ts) when configured.
 2. **Dispatcher** — Prefixes live in [`review.ts`](../src/handlers/monitor/review.ts) (e.g. `monitor:poll:`, `monitor:review:post:`). Implementation is split across [`interactionPanel.ts`](../src/handlers/monitor/interactionPanel.ts), [`interactionPost.ts`](../src/handlers/monitor/interactionPost.ts), [`interactionReview.ts`](../src/handlers/monitor/interactionReview.ts).
-3. **State** — SQLite for panel embed, connection cooldowns, per-connection `seen_posts`; ephemeral review state in `review.ts`.
+3. **State** — SQLite (`DB_PATH`) for panel embed, connection cooldowns, and `monitor_seen_posts` (keyed by `connection_id` + `post_id`); ephemeral review state in `review.ts`.
 
 ## Storage and database
 
 - **Metadata DB** (path from `DB_PATH`, default `./data.db`): `monitor_panel_messages`, `monitor_connection_meta`.
-- **Per-connection DBs** under `{dirname(DB_PATH)}/connections-db/<connectionId>.db`: `seen_posts` (and optional `posted_message_id` tracking for review posting).
+- **Seen/post rows** live in **`monitor_seen_posts`** on the same DB as panel metadata.
 
 See [monitor-feature.md](./monitor-feature.md) for config shape.

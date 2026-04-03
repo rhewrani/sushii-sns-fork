@@ -69,7 +69,7 @@ Downloaders live in `src/platforms/<name>/downloader.ts` and extend `SnsDownload
 When `MONITORS_CONFIG_PATH` points to a JSON config:
 
 - **Connections** (not legacy “subscriptions”): each maps Instagram sources → review channel → destination channel; panel lives in `panel_channel_id`.
-- **SQLite**: `DB_PATH` metadata DB plus per-connection DB files under `{dirname(DB_PATH)}/connections-db/`. See `src/handlers/monitor/db.ts`, `schema.ts`.
+- **SQLite**: `DB_PATH` metadata DB includes panel state, connection fetch meta, and `monitor_seen_posts`. See `src/handlers/monitor/db.ts`, `schema.ts`.
 - **Queue**: `handlers/monitor/queue.ts` serializes post jobs with timeout.
 - **Ops alerts**: `src/utils/opsAlert.ts` (optional `ALERT_DISCORD_USER_ID`).
 

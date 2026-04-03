@@ -105,7 +105,7 @@ export async function handleInteraction(
 
       if (customId.startsWith(REVIEW_POST_PREFIX)) {
         const reviewId = customId.slice(REVIEW_POST_PREFIX.length);
-        await handleReviewPost(interaction, reviewId);
+        await handleReviewPost(interaction, reviewId, db);
         return;
       }
 
@@ -229,7 +229,7 @@ export async function handleInteraction(
         const connectionId = `${type}:${handle}`;
 
         try {
-          purgeConnectionSeenPosts(connectionId);
+          purgeConnectionSeenPosts(db, connectionId);
           purgeConnectionMeta(db, connectionId);
         } catch (err) {
           log.error({ err, connectionId }, "Failed to purge connection DB");
@@ -250,7 +250,7 @@ export async function handleInteraction(
         await cmd.deferReply({ flags: MessageFlags.Ephemeral });
 
         try {
-          purgeAllSeenPosts();
+          purgeAllSeenPosts(db);
           purgeAllConnectionMeta(db);
         } catch (err) {
           log.error({ err }, "Failed to purge all monitor DB state");

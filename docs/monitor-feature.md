@@ -44,7 +44,7 @@ Connections are declared in JSON (not the older per-subscription-only model). Ex
 
 1. **Panel** — `/monitor panel setup` (in `panel_channel_id`) posts/pins the embed; buttons use prefix `monitor:poll:` + connection id.
 2. **Cooldown** — [`getConnectionMeta`](../src/handlers/monitor/db.ts) vs `cooldown_seconds` on the connection.
-3. **Fetch** — [`fetchConnectionAndCreateReviews`](../src/handlers/monitor/fetch.ts) pulls new items, marks seen in the per-connection DB, creates review messages (Components V2).
+3. **Fetch** — [`fetchConnectionAndCreateReviews`](../src/handlers/monitor/fetch.ts) pulls new items, marks seen in `monitor_seen_posts`, creates review messages (Components V2).
 4. **Post from review** — [`handleReviewPost`](../src/handlers/monitor/interactionReview.ts) enqueues [`sendPostToChannel`](../src/utils/discord.ts) via [`enqueuePost`](../src/handlers/monitor/queue.ts).
 
 ## Custom ID prefixes
@@ -62,7 +62,6 @@ Defined in [`review.ts`](../src/handlers/monitor/review.ts). Add new prefixes th
 
 ## Database
 
-- **Metadata DB** (`DB_PATH`, default `./data.db`): panel message pointer, connection-level last fetch.
-- **`connections-db/`**: one SQLite file per connection id — `seen_posts` (and related columns for posted message tracking).
+- **Metadata DB** (`DB_PATH`, default `./data.db`): panel message pointer, connection-level last fetch, and **`monitor_seen_posts`** (`connection_id`, `post_id`, `seen_at`, `posted_message_id`) for deduplication and posted-message tracking.
 
 Ops alerts for serious failures use [`opsAlert.ts`](../src/utils/opsAlert.ts) (`ALERT_DISCORD_USER_ID` optional).
