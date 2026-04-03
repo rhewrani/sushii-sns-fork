@@ -105,26 +105,7 @@ export async function handlePanelPollButton(
       connectionId,
     );
 
-    const panelMessage = getPanelMessage(metadataDb, monitorsConfig.panel_channel_id);
-    if (!panelMessage) return;
-
-    const channel = await client.channels.fetch(monitorsConfig.panel_channel_id);
-    if (!channel || !channel.isTextBased()) return;
-
-    const msg = await channel.messages.fetch(panelMessage.message_id);
-
-    const connectionsMeta = monitorsConfig.connections.map((c) => {
-      const id = getConnectionId(c);
-      return {
-        connectionId: id,
-        label: `${c.type}/${c.handle}`,
-        cooldownSeconds: c.cooldown_seconds,
-        lastFetch: getConnectionMeta(metadataDb, id),
-      };
-    });
-
-    const embedData = buildPanelEmbed(connectionsMeta as any);
-    await msg.edit(embedData);
+    await refreshPanelEmbed(client, monitorsConfig, metadataDb);
 
     await sendMonitorLog(
       client,

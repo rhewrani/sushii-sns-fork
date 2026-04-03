@@ -170,17 +170,13 @@ export async function handlePostCommand(
     const platform = link.metadata.platform;
     const normalizedPlatform = platform.replace(/-story$/, "");
 
-    let finalConnectionId: string | undefined;
-    let connectionExists = false;
-
     const { username, postId, canCheckBeforeFetch } = extractConnectionInfo(link);
 
     if (canCheckBeforeFetch && username && postId) {
-      finalConnectionId = `${normalizedPlatform}:${username}`;
-
+      const preConnectionId = `${normalizedPlatform}:${username}`;
       const confirmed = await checkDuplicateBeforeFetch(
         _db,
-        finalConnectionId,
+        preConnectionId,
         postId,
         monitorsConfig,
         interaction,
@@ -199,14 +195,11 @@ export async function handlePostCommand(
     // problem with instagram POSTS: with format https://www.instagram.com/p/SHORTCODE/ we don't have the username and we cant check db
     // so we check AFTER sns downloader fetched all the data (I know not optimal)
     if ((platform === "instagram" || platform === "instagram-story") && postData.username) {
-      finalConnectionId = `${normalizedPlatform}:${postData.username}`;
-
-      if (isConnectionMonitored(monitorsConfig, finalConnectionId)) {
-        connectionExists = true;
-
+      const igConnectionId = `${normalizedPlatform}:${postData.username}`;
+      if (isConnectionMonitored(monitorsConfig, igConnectionId)) {
         const confirmed = await checkDuplicateBeforeFetch(
           _db,
-          finalConnectionId,
+          igConnectionId,
           postData.postID,
           monitorsConfig,
           interaction,
@@ -215,12 +208,21 @@ export async function handlePostCommand(
       }
     }
 
+    const trackInDb =
+      (platform === "instagram" || platform === "instagram-story") &&
+      !!postData.username &&
+      isConnectionMonitored(monitorsConfig, `${normalizedPlatform}:${postData.username}`);
+
+    const connectionIdForDb = trackInDb
+      ? `${normalizedPlatform}:${postData.username}`
+      : undefined;
+
     const result = await sendPostToChannel(socialsChannel as SendableChannels, postData, {
       format: monitorsConfig.format,
       template: monitorsConfig.template,
-      metadataDb: connectionExists ? _db : undefined,
-      connectionId: connectionExists ? finalConnectionId : undefined,
-      postId: connectionExists ? postData.postID : undefined,
+      metadataDb: trackInDb ? _db : undefined,
+      connectionId: connectionIdForDb,
+      postId: trackInDb ? postData.postID : undefined,
     });
 
     const jumpLink = result.messageIds[0]

@@ -10,9 +10,10 @@ import {
   type ModalSubmitInteraction,
   type SendableChannels,
   type StringSelectMenuInteraction,
+  type TextBasedChannel,
 } from "discord.js";
 import logger from "../../logger";
-import { sendPostToChannel } from "../../utils/discord";
+import { sendPostToChannel, type SendPostResult } from "../../utils/discord";
 import { buildReviewBatches, buildReviewStatusEditOptions } from "./embed";
 import { enqueuePost } from "./queue";
 import {
@@ -24,6 +25,79 @@ import {
 } from "./review";
 
 const log = logger.child({ module: "monitor/interactionReview" });
+
+async function editStatusMessage(
+  channel: TextBasedChannel,
+  msgId: string | undefined,
+  text: string,
+): Promise<void> {
+  if (!msgId) return;
+  try {
+    const msg = await channel.messages.fetch(msgId);
+    await msg.edit(buildReviewStatusEditOptions(text));
+  } catch (err) {
+    log.warn({ err, msgId }, "Failed to edit review status message");
+  }
+}
+
+async function postReviewToSocials(
+  state: ReviewState,
+  reviewId: string,
+  filteredFiles: ReviewState["postData"]["files"],
+  interaction: ButtonInteraction,
+  reviewChannel: TextBasedChannel,
+  lastMsgId: string | undefined,
+  metadataDb: Database,
+): Promise<void> {
+  const channel = await interaction.client.channels.fetch(state.socialsChannelId);
+  if (!channel || !channel.isTextBased() || !("send" in channel)) {
+    await editStatusMessage(reviewChannel, lastMsgId, "❌ Failed - channel not sendable");
+    return;
+  }
+
+  const connectionId =
+    `${state.postData.postLink.metadata.platform.replace(/-story$/, "")}:${state.postData.username}`;
+  const filteredPostData = { ...state.postData, files: filteredFiles };
+
+  let result: SendPostResult;
+  try {
+    result = await sendPostToChannel(channel as SendableChannels, filteredPostData, {
+      format: state.format as "inline" | "links",
+      template: state.template,
+      metadataDb,
+      connectionId,
+      postId: state.postData.postID,
+      ...(state.customContent != null ? { contentOverride: state.customContent } : {}),
+    });
+  } catch (err) {
+    log.error({ err, channelId: state.socialsChannelId }, "Failed to post to socials channel");
+    const msg =
+      err instanceof Error && err.message.toLowerCase().includes("timed out")
+        ? "❌ Timeout while posting"
+        : "❌ Failed to post";
+    await editStatusMessage(reviewChannel, lastMsgId, msg);
+    return;
+  }
+
+  deleteReview(reviewId);
+
+  const guildId = interaction.guildId;
+  const firstId = result.messageIds[0];
+  const postedLine =
+    guildId && firstId
+      ? `✅ Posted! https://discord.com/channels/${guildId}/${state.socialsChannelId}/${firstId}`
+      : "✅ Posted! (open the socials channel to see the message.)";
+
+  await editStatusMessage(reviewChannel, lastMsgId, postedLine);
+
+  setTimeout(async () => {
+    try {
+      if (lastMsgId) await reviewChannel.messages.delete(lastMsgId);
+    } catch {
+      // Already deleted
+    }
+  }, 5000);
+}
 
 // ---------------------------------------------------------------------------
 // Review interaction handlers
@@ -197,7 +271,7 @@ export async function handleReviewPost(
   await interaction.deferUpdate();
 
   const reviewChannel = interaction.channel;
-  if (!reviewChannel) return;
+  if (!reviewChannel || !reviewChannel.isTextBased()) return;
 
   const lastMsgId = state.messageIds[state.messageIds.length - 1];
 
@@ -210,112 +284,19 @@ export async function handleReviewPost(
     }
   }
 
-  if (lastMsgId) {
-    try {
-      const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-      await lastMsg.edit(buildReviewStatusEditOptions("⏳ Posting..."));
-    } catch (err) {
-      log.warn({ err, lastMsgId }, "Failed to set review message to Posting state");
-    }
-  }
+  await editStatusMessage(reviewChannel, lastMsgId, "⏳ Posting...");
 
-  enqueuePost(async () => {
-    let postedToSocials = false;
-    let result;
-
-    try {
-      const channel = await interaction.client.channels.fetch(state.socialsChannelId);
-      if (!channel || !channel.isTextBased() || !("send" in channel)) {
-        if (lastMsgId) {
-          const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-          await lastMsg.edit(
-            buildReviewStatusEditOptions("❌ Failed - channel not sendable"),
-          );
-        }
-        return;
-      }
-      const filteredPostData = { ...state.postData, files: filteredFiles };
-
-      const buildConnectionId = (platform: string, username: string) =>
-        `${platform.replace(/-story$/, "")}:${username}`;
-
-      const connectionId = buildConnectionId(
-        state.postData.postLink.metadata.platform,
-        state.postData.username
-      );
-
-      result = await sendPostToChannel(channel as SendableChannels, filteredPostData, {
-        format: state.format as "inline" | "links",
-        template: state.template,
-        metadataDb,
-        connectionId,
-        postId: state.postData.postID,
-        ...(state.customContent != null ? { contentOverride: state.customContent } : {}),
-      });
-
-      postedToSocials = true;
-    } catch (err) {
-      log.error({ err, channelId: state.socialsChannelId }, "Failed to post to socials channel");
-      if (lastMsgId) {
-        try {
-          const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-          const msg =
-            err instanceof Error &&
-            err.message.toLowerCase().includes("timed out")
-              ? "❌ Timeout while posting"
-              : "❌ Failed to post";
-          await lastMsg.edit(buildReviewStatusEditOptions(msg));
-        } catch (e) {
-          log.warn({ e, lastMsgId }, "Failed to edit review message after post error");
-        }
-      }
-      throw err;
-    }
-
-    if (!postedToSocials) {
-      if (lastMsgId) {
-        try {
-          const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-          await lastMsg.edit(buildReviewStatusEditOptions("❌ Failed to post"));
-        } catch (e) {
-          log.warn({ e, lastMsgId }, "Failed to edit review message (not posted)");
-        }
-      }
-      return;
-    }
-
-    deleteReview(reviewId);
-
-    if (lastMsgId) {
-      try {
-        const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-        const guildId = interaction.guildId ?? lastMsg.guildId;
-        const firstId = result?.messageIds?.[0];
-        const postedLine =
-          guildId && firstId
-            ? `✅ Posted! https://discord.com/channels/${guildId}/${state.socialsChannelId}/${firstId}`
-            : "✅ Posted! (open the socials channel to see the message.)";
-        await lastMsg.edit(buildReviewStatusEditOptions(postedLine));
-
-        setTimeout(async () => {
-          try {
-            await reviewChannel.messages.delete(lastMsgId);
-          } catch {
-            // Already deleted
-          }
-        }, 5000);
-      } catch (err) {
-        log.warn({ err, lastMsgId }, "Failed to update review message to Posted state");
-        try {
-          await reviewChannel.messages.delete(lastMsgId);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }).catch(() => {
-    // Error already handled above
-  });
+  enqueuePost(() =>
+    postReviewToSocials(
+      state,
+      reviewId,
+      filteredFiles,
+      interaction,
+      reviewChannel,
+      lastMsgId,
+      metadataDb,
+    ),
+  );
 }
 
 export async function handleReviewSkip(
@@ -341,7 +322,7 @@ export async function handleReviewSkip(
   deleteReview(reviewId);
 
   const reviewChannel = interaction.channel;
-  if (!reviewChannel) return;
+  if (!reviewChannel || !reviewChannel.isTextBased()) return;
 
   const lastMsgId = state.messageIds[state.messageIds.length - 1];
 
@@ -354,24 +335,15 @@ export async function handleReviewSkip(
     }
   }
 
-  if (lastMsgId) {
-    try {
-      const lastMsg = await reviewChannel.messages.fetch(lastMsgId);
-      await lastMsg.edit(buildReviewStatusEditOptions("⏭️ Skipped"));
+  await editStatusMessage(reviewChannel, lastMsgId, "⏭️ Skipped");
 
-      setTimeout(async () => {
-        try {
-          await reviewChannel.messages.delete(lastMsgId);
-        } catch {
-          // Already deleted
-        }
-      }, 5000);
-    } catch {
+  if (lastMsgId) {
+    setTimeout(async () => {
       try {
         await reviewChannel.messages.delete(lastMsgId);
       } catch {
-        /* ignore */
+        // Already deleted
       }
-    }
+    }, 5000);
   }
 }
